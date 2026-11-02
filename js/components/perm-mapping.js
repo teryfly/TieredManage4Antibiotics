@@ -29,6 +29,8 @@
     },
     created: function () { this.D = D; },
     computed: {
+      // 模板里裸用 D.xxx() 取不到值（Vue 只在实例上查找），显式暴露领域常量
+      D: function () { return D; },
       isAdmin: function () { return App.state.roleCode === 'admin'; },
       rules: function () { App.state.refresh; return Svc.mappingRules(); },
       titleOptions: function () { return D.TITLES; },

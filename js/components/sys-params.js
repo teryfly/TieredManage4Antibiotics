@@ -49,6 +49,9 @@
       this.loadRules();
     },
     computed: {
+      // 模板中直接写 D.xxx() 的话，Vue 运行时编译只会在实例上找 D，取不到就抛错，
+      // 因此在此显式暴露领域常量（与本分支改造无关，属既有缺陷修正）
+      D: function () { return D; },
       isAdmin: function () { return App.state.roleCode === 'admin'; },
       // Tab1
       matrix: function () { App.state.refresh; return Svc.titleMatrix(); },
