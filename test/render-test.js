@@ -6,6 +6,7 @@ const { JSDOM } = require('jsdom');
 const root = path.join(__dirname, '..');
 const files = [
   'lib/vue.global.prod.js',
+  'js/config.js', 'js/fhir-r4.js', 'js/fhir-client.js',
   'js/fhir-store.js', 'js/fhir-ext.js', 'js/domain.js', 'js/fhir-profiles.js', 'js/seed.js', 'js/services.js',
   'js/app.js',
   'js/components/common.js',
@@ -31,6 +32,9 @@ for (const f of files) {
   try { win.eval(code); }
   catch (e) { console.log('FATAL while loading', f, '\n', e.message); process.exit(1); }
 }
+
+// 渲染回归测试只关心界面装配，强制本地模式，避免真的去打服务端
+win.localStorage.setItem('amr-fhir-config', JSON.stringify({ mode: 'local' }));
 
 // 启动应用
 try { win.__BOOT_AMS__(); } catch (e) { console.log('FATAL boot:', e.stack); process.exit(1); }

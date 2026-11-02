@@ -16,7 +16,10 @@
       toasts: [],
       showNotif: false,
       showUserMenu: false,
-      showFhir: false
+      showFhir: false,
+      showServer: false,      // FHIR 服务端设置弹框
+      boot: { phase: 'idle', error: null, stats: null },
+      sync: null
     }),
     currentUser: function () {
       var rc = this.state.roleCode;
@@ -50,15 +53,97 @@
         var i = this.state.toasts.findIndex(function (t) { return t.id === id; });
         if (i >= 0) this.state.toasts.splice(i, 1);
       }).bind(this), 2600);
+    },
+
+    /* ---------- 启动 / 重连 FHIR 服务端 ---------- */
+    reload: function () {
+      var st = this.state.boot;
+      st.phase = 'connecting'; st.error = null;
+      return global.FHIR.bootstrap().then(function (stats) {
+        st.stats = stats;
+        st.phase = stats.mode === 'local' ? 'local' : 'ready';
+        if (stats.pushed) {
+          App.toast('服务端无本系统数据，已写入 ' + stats.pushed + ' 条初始资源', 'info');
+          App.bump();
+        } else if (stats.loadedCount) {
+          App.toast('已从 FHIR 服务端读取 ' + stats.loadedCount + ' 条资源', 'info');
+          App.bump();
+        }
+        return stats;
+      }).catch(function (err) {
+        st.phase = 'failed'; st.error = err.message;
+        throw err;
+      });
+    },
+
+    /* 后端不可达时退回本地演示，避免白屏；数据仍在内存镜像里可继续操作 */
+    useLocalFallback: function () {
+      global.FHIR.goLocal();
+      this.state.boot.phase = 'local';
+      this.state.boot.error = null;
+      this.bump();
+      this.toast('已切换为本地演示模式（数据不落服务端）', 'info');
+    },
+
+    /* 改服务端地址/模式后整页重载：重新走一遍「装载 → 探活 → 预取 → 对账」，
+     * 比在运行时清空重建镜像更少出错 */
+    applyServerConfig: function (patch) {
+      var self = this;
+      return global.AmrConfig.set(patch).then(function () {
+        self.toast('配置已保存，正在重连…', 'info');
+        setTimeout(function () { global.location.reload(); }, 400);
+      }).catch(function (err) {
+        self.toast('配置有误：' + err.message, 'error');
+        throw err;
+      });
     }
   };
 
-  // 任意 FHIR 资源变更后，刷新当前页面数据
-  global.FHIR.subscribe(function () { App.bump(); });
+  // 任意 FHIR 资源变更后，刷新当前页面数据；同步进度只更新状态条，
+  // 不触发整页重算（预取大数据集时避免反复聚合）
+  global.FHIR.subscribe(function (evt) {
+    if (evt && evt.action === 'sync') { App.state.sync = evt.stats; return; }
+    App.bump();
+  });
 
   var RootComponent = {
-    data: function () { return { fhirType: 'Medication', fhirId: '' }; },
+    data: function () {
+      var cfg = global.AmrConfig.all();
+      return {
+        fhirType: 'Medication', fhirId: '',
+        srv: { base: cfg.fhirBase, mode: cfg.mode, persist: cfg.persistUsageRecords,
+               testing: false, ok: false, result: '' }
+      };
+    },
     computed: {
+      boot: function () { return App.state.boot; },
+      appReady: function () { var p = App.state.boot.phase; return p === 'ready' || p === 'local'; },
+      sync: function () { return App.state.sync || global.FHIR.stats(); },
+      serverCfg: function () { return global.AmrConfig.all(); },
+      bootText: function () {
+        var st = this.sync;
+        if (st.status === 'connecting') return '正在连接 FHIR 服务端…';
+        if (st.status === 'loading') return '正在读取服务端资源（已载入 ' + st.loadedCount + ' 条）…';
+        if (st.pushed) return '服务端为空，正在写入初始基础数据…';
+        return '正在装载 FHIR 数据…';
+      },
+      bootProgress: function () {
+        var st = this.sync;
+        if (st.status !== 'loading') return 8;
+        var total = global.FHIR.remoteTypes().length;
+        return Math.max(8, Math.round((st.loadedTypes || 0) / total * 100));
+      },
+      connPillText: function () {
+        var st = this.sync;
+        if (st.mode !== 'remote') return '📴 本地演示模式';
+        if (st.failed) return '⚠️ ' + st.failed + ' 条写入失败';
+        if (st.queued || st.inflight) return '🔄 同步中 ' + (st.done) + '…';
+        return '🟢 已连接 FHIR ' + (st.fhirVersion || '');
+      },
+      connPillClass: function () {
+        var st = this.sync;
+        return { 'conn-err': st.failed > 0, 'conn-busy': st.mode === 'remote' && (st.queued > 0 || st.inflight > 0), 'conn-off': st.mode !== 'remote' };
+      },
       fhirTypes: function () { App.state.refresh; return global.FHIR.types(); },
       fhirList: function () {
         App.state.refresh;
@@ -90,6 +175,40 @@
     },
     methods: {
       go: function (r) { App.navigate(r); },
+      openServer: function () {
+        var cfg = global.AmrConfig.all();
+        this.srv.base = cfg.fhirBase; this.srv.mode = cfg.mode;
+        this.srv.persist = cfg.persistUsageRecords; this.srv.result = ''; this.srv.ok = false;
+        App.state.showServer = true;
+      },
+      saveServer: function () {
+        var self = this;
+        return App.applyServerConfig({
+          fhirBase: this.srv.base, mode: this.srv.mode, persistUsageRecords: this.srv.persist
+        }).catch(function () { self.srv.result = '保存失败'; self.srv.ok = false; });
+      },
+      testServer: function () {
+        var self = this;
+        var base = (this.srv.base || '').trim().replace(/\/+$/, '');
+        if (!/^https?:\/\/[^\s]+$/i.test(base)) {
+          this.srv.ok = false; this.srv.result = '地址须以 http:// 或 https:// 开头';
+          return Promise.reject(new Error(this.srv.result));
+        }
+        this.srv.testing = true; this.srv.result = '';
+        return global.FHIR.ping(base).then(function (r) {
+          self.srv.testing = false; self.srv.ok = true;
+          self.srv.result = '连接成功 · FHIR ' + r.fhirVersion + (r.software ? ' · ' + r.software : '');
+        }, function (err) {
+          self.srv.testing = false; self.srv.ok = false;
+          self.srv.result = '连接失败：' + err.message;
+        });
+      },
+      retryBoot: function () {
+        var self = this;
+        App.reload().catch(function () { self.toastRetryFail(); });
+      },
+      toastRetryFail: function () { App.toast('仍然连不上服务端，可改用本地演示模式', 'error'); },
+      useLocal: function () { App.useLocalFallback(); },
       switchRole: function (r) { App.switchRole(r); },
       modulePages: function (m) {
         var role = this.role;
@@ -112,6 +231,29 @@
     },
     template: `
     <div>
+      <!-- 启动门：连接/装载 FHIR 服务端期间与失败时的处理 -->
+      <div v-if="!appReady" class="boot-mask">
+        <div class="boot-card">
+          <div class="boot-title">💊 抗菌药物分级管理系统 · FHIR R4</div>
+          <div v-if="boot.phase==='connecting' || boot.phase==='idle'">
+            <div class="boot-step">{{ bootText }}</div>
+            <div class="boot-bar"><i :style="{width: bootProgress + '%'}"></i></div>
+            <div class="muted">目标服务端：{{ sync.server || serverCfg.fhirBase }}</div>
+          </div>
+          <div v-else-if="boot.phase==='failed'">
+            <div class="boot-step err">⚠️ 无法连接 FHIR 服务端</div>
+            <pre class="boot-err">{{ boot.error }}</pre>
+            <div class="muted">目标服务端：{{ serverCfg.fhirBase }}</div>
+            <div class="boot-acts">
+              <button class="btn primary" @click="retryBoot">重试连接</button>
+              <button class="btn" @click="openServer">修改服务端地址</button>
+              <button class="btn" @click="useLocal">以本地演示模式继续</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <template v-else>
       <!-- 顶部导航 -->
       <header class="topbar">
         <div class="topbar-inner">
@@ -166,6 +308,10 @@
             {{ r.icon }} {{ r.name }}
           </span>
           <div style="flex:1"></div>
+          <span class="role-pill" :class="connPillClass" @click="openServer"
+                :title="sync.server || '未连接服务端'">
+            {{ connPillText }}
+          </span>
           <span class="role-pill" @click="openFhir" title="查看底层 FHIR 标准资源">🔍 FHIR 资源</span>
         </div>
       </div>
@@ -205,6 +351,50 @@
       <div class="toast-wrap">
         <div v-for="t in s.toasts" class="toast" :class="t.type">{{ t.msg }}</div>
       </div>
+      </template>
+
+      <!-- FHIR 服务端设置 -->
+      <ui-modal v-if="s.showServer" title="🔌 FHIR 服务端设置" width="wide" @close="s.showServer=false">
+        <div class="alert info" style="margin-bottom:12px"><span>ℹ️</span>
+          <div>本分支把业务数据读写到真实 <b>FHIR R4</b> 服务端（默认公共演示实例 <code>https://hapi.fhir.org/baseR4</code>）。
+          地址优先级：<b>URL 参数 ?fhir=</b> &gt; <b>本弹框保存的值</b> &gt; <b>fhir-config.json</b> &gt; 内置默认。
+          公共演示实例<b>无鉴权、数据公开、会被他人读写或定期清空</b>，仅用于验证链路，请勿存放真实患者数据。</div>
+        </div>
+        <div class="field" style="margin-bottom:12px">
+          <label>HAPI FHIR 基地址（须以 http:// 或 https:// 开头，无需 /资源类型）</label>
+          <input v-model="srv.base" placeholder="https://hapi.fhir.org/baseR4" style="width:100%">
+        </div>
+        <div class="kv" style="margin-bottom:12px">
+          <span class="k">数据模式</span>
+          <span>
+            <label style="margin-right:16px"><input type="radio" value="remote" v-model="srv.mode"> 连接服务端（读镜像 + 写穿透）</label>
+            <label><input type="radio" value="local" v-model="srv.mode"> 本地演示（纯内存，不发请求）</label>
+          </span>
+          <span class="k">用药记录落库</span>
+          <span>
+            <label><input type="checkbox" v-model="srv.persist"> 把约 4870 条 MedicationAdministration 也写入服务端</label>
+            <div class="muted">关闭时仅存于本地镜像，统计页面照常工作；开启后首次初始化会慢很多，公共演示服务器可能限流。</div>
+          </span>
+        </div>
+        <div class="filter-bar" style="margin-bottom:12px">
+          <button class="btn" @click="testServer" :disabled="srv.testing">{{ srv.testing ? '测试中…' : '测试连接' }}</button>
+          <span v-if="srv.result" :class="srv.ok ? 'tag green' : 'tag red'">{{ srv.result }}</span>
+        </div>
+        <div class="divider-label">当前同步状态</div>
+        <div class="kv">
+          <span class="k">模式 / 状态</span><span>{{ sync.mode }} · {{ sync.status }}</span>
+          <span class="k">服务端</span><span>{{ sync.server || '—' }}</span>
+          <span class="k">FHIR 版本</span><span>{{ sync.fhirVersion || '—' }}</span>
+          <span class="k">已读取 / 已写入</span><span>{{ sync.loadedCount }} / {{ sync.done }}</span>
+          <span class="k">待写 / 进行 / 失败</span>
+          <span>{{ sync.queued }} / {{ sync.inflight }} / <b :class="{'txt-err': sync.failed}">{{ sync.failed }}</b></span>
+          <span class="k">最近写入错误</span><span class="muted">{{ sync.lastError ? (sync.lastError.type + '/' + sync.lastError.id + '：' + sync.lastError.message) : '无' }}</span>
+        </div>
+        <template #foot>
+          <button class="btn" @click="s.showServer=false">关闭</button>
+          <button class="btn primary" @click="saveServer">保存并重连</button>
+        </template>
+      </ui-modal>
     </div>`
   };
 
@@ -217,6 +407,8 @@
     // 兼容通知面板里的空状态别名
     app.component('component-empty', AMS.components['empty-state']);
     App._vm = app.mount('#app');
+    // 先挂载再装载数据：连接过程与失败原因由界面呈现，不会白屏
+    App.reload().catch(function () { /* 失败已写入 boot.phase/boot.error，界面提供重试与本地兜底 */ });
     console.log('[app] 已挂载，页面：', Object.keys(AMS.pages).join(', '));
   }
 

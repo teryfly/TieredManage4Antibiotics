@@ -18,6 +18,8 @@
       };
     },
     computed: {
+      // 模板里裸用 D.xxx() 取不到值（Vue 只在实例上查找），显式暴露领域常量
+      D: function () { return D; },
       role: function () { return App.state.roleCode; },
       // 药学部门与审批专家均是处方权限审批流程中的一环，均可访问本页面
       isApprover: function () { return App.state.roleCode === 'expert' || App.state.roleCode === 'pharmacy'; },
@@ -46,6 +48,8 @@
       }
     },
     methods: {
+      // R4 的 authoredOn 是 ISO instant，界面按「年-月-日 时:分」展示
+      fmtInstant: Svc.fmtInstant,
       reset: function () { this.filter = { status: 'in-progress', type: 'all', dept: 'all', from: '', to: '' }; this.page = 1; this.selected = []; },
       open: function (t) { this.current = t; this.decision = ''; this.reason = ''; this.showModal = true; },
       pickTpl: function (tpl) { this.reason = tpl; },
@@ -143,7 +147,7 @@
           <span class="k">申请编号</span><span>{{ current.identifier[0].value }}</span>
           <span class="k">申请类型</span><span><level-tag :level="current.ext.type"></level-tag></span>
           <span class="k">申请人</span><span>{{ current.requester.display }} / {{ current.ext.dept }}（{{ D.titleName(current.ext.requesterTitle) }}）</span>
-          <span class="k">申请时间</span><span>{{ current.authoredOn }}</span>
+          <span class="k">申请时间</span><span>{{ fmtInstant(current.authoredOn) }}</span>
         </div>
         <div class="divider-label">申请内容</div>
         <div class="kv">

@@ -5,12 +5,32 @@
  * ===================================================================== */
 (function (global) {
   'use strict';
-  var F = global.FHIR, D = global.Domain;
+  var F = global.FHIR, D = global.Domain, R4 = global.FHIRR4;
 
   function now() {
     var d = new Date();
     function p(n) { return String(n).padStart(2, '0'); }
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  // 展示用 'YYYY-MM-DD HH:mm'；写入 FHIR 的 instant 元素必须用 ISO 形态，
+  // 否则服务端报 HAPI-1821 Invalid date/time format
+  function nowInstant() {
+    var d = new Date();
+    function p(n) { return String(n).padStart(2, '0'); }
+    // 带秒：分钟级时间戳会让同一分钟内的两条同内容审计记录被服务端判为重复而丢弃
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function fmtInstant(s) { return (s || '').replace('T', ' ').slice(0, 16); }
+
+  /* 变更记录：changeType 同时落到 Provenance.activity（R4 对该元素的语义即
+   * 「发生的活动」），既比塞在扩展里规范，也让相邻两条记录内容不同。 */
+  function audit(changeType, content) {
+    return F.create({
+      resourceType: 'Provenance', recorded: nowInstant(),
+      activity: { coding: [{ code: 'amr-' + changeType, display: changeType }] },
+      ext: { changeType: changeType, content: content, operator: global.App.currentUser().display }
+    });
   }
   function genSqno() {
     var n = F.count('Task') + 1000;
@@ -19,8 +39,26 @@
     return 'SQ-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + n;
   }
 
+  /* 服务端开启引用完整性校验：Task.for 必须指向已存在的 Patient，否则整单写入被
+   * 400 拒收。按病案号找回患者，找不到就补建一个 Patient 资源，让申请与患者之间
+   * 是可追溯的真实关联，而不是原型里的占位 'Patient/new'。 */
+  function patientFor(payload) {
+    if (!payload.mrn) return undefined;
+    var hit = F.search('Patient', function (p) { return p.ext && p.ext.mrn === payload.mrn; })[0];
+    if (hit) return { reference: 'Patient/' + hit.id, display: (hit.name[0] || {}).text };
+    var created = F.create({
+      resourceType: 'Patient',
+      name: [{ text: payload.patientName || '未知患者' }],
+      identifier: [{ value: payload.mrn }],
+      ext: { mrn: payload.mrn, diagnosis: payload.diagnosis || '', infection: payload.infection || '' }
+    });
+    return { reference: 'Patient/' + created.id, display: created.name[0].text };
+  }
+
   var Svc = {
     now: now,
+    nowInstant: nowInstant,
+    fmtInstant: fmtInstant,
 
     /* ============ 分级目录（Medication） ============ */
     medications: function (filter) {
@@ -64,7 +102,7 @@
       b.ext.version = 'v' + parts.join('.');
       b.ext.updatedAt = now().split(' ')[0];
       F.update(b);
-      F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '目录版本', content: note + '，更新至 ' + b.ext.version, operator: global.App.currentUser().display } });
+      audit('目录版本', note + '，更新至 ' + b.ext.version);
     },
     catalogVersion: function () { return F.read('Basic', 'Basic-catalog-version').ext; },
 
@@ -84,7 +122,7 @@
       g.ext.approvalCheck = approvals.slice();
       g.ext.interceptOnNotApproved = approvals.length ? g.ext.interceptOnNotApproved : 'none';
       F.update(g);
-      F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '权限映射', content: D.levelName(level) + '映射规则更新', operator: global.App.currentUser().display } });
+      audit('权限映射', D.levelName(level) + '映射规则更新');
     },
     // 职称 -> 可开具分级（由映射规则派生）
     titleMatrix: function () {
@@ -108,7 +146,7 @@
         if (!want && has) p.ext.allowedTitles.splice(p.ext.allowedTitles.indexOf(title), 1);
         F.update(p);
       });
-      F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '职称权限', content: D.titleName(title) + '处方权限范围调整', operator: global.App.currentUser().display } });
+      audit('职称权限', D.titleName(title) + '处方权限范围调整');
     },
     // 职称变更影响预览：在岗医师数 + 科室分布（演示用真实化数据）
     titleImpact: function (title) {
@@ -144,7 +182,7 @@
       var st = F.read('Basic', 'Basic-gatekeep-status');
       st.ext.lastModified = now(); st.ext.operator = global.App.currentUser().display;
       F.update(st);
-      F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '卡控规则', content: D.levelName(level) + '卡控规则调整（职称校验/审批校验/拦截动作）', operator: global.App.currentUser().display } });
+      audit('卡控规则', D.levelName(level) + '卡控规则调整（职称校验/审批校验/拦截动作）');
 
       // 审批状态校验项变更时，同步权限映射规则表与该分级下未单独调整权限的药品，保持三处数据一致
       if (data.approvalCheck) {
@@ -160,7 +198,7 @@
             F.update(m);
             affected++;
           });
-          F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '权限映射', content: D.levelName(level) + '审批要求由卡控规则同步调整，已联动更新 ' + affected + ' 个药品的权限映射', operator: global.App.currentUser().display } });
+          audit('权限映射', D.levelName(level) + '审批要求由卡控规则同步调整，已联动更新 ' + affected + ' 个药品的权限映射');
         }
       }
     },
@@ -270,9 +308,9 @@
       flow[1].status = 'current';
       var status = 'in-progress', businessStatus = '待药学部门审批';
       var t = F.create({
-        resourceType: 'Task', identifier: [{ value: genSqno() }], status: status, intent: 'order', authoredOn: now(),
+        resourceType: 'Task', identifier: [{ value: genSqno() }], status: status, intent: 'order', authoredOn: nowInstant(),
         businessStatus: { text: businessStatus },
-        for: { reference: 'Patient/new' },
+        for: patientFor(payload),
         requester: { reference: 'Practitioner/' + u.practitioner, display: u.name },
         ext: {
           type: payload.type, drug: payload.drug, dept: payload.dept, requesterTitle: u.title,
@@ -523,7 +561,7 @@
     rolePermissions: function () { return this.basic('role-permissions').pages; },
     saveRolePermissions: function (pages) {
       this.saveBasic('role-permissions', { pages: pages });
-      F.create({ resourceType: 'Provenance', recorded: now(), ext: { changeType: '角色权限', content: '用户角色页面访问权限已调整', operator: global.App.currentUser().display } });
+      audit('角色权限', '用户角色页面访问权限已调整');
     },
 
     /* ============ 首页统计（按角色差异化）============ */

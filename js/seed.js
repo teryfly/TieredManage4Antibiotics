@@ -6,6 +6,7 @@
   'use strict';
 
   var F = global.FHIR;
+  var R4 = global.FHIRR4;
 
   // 审批节点角色 -> 中文
   var NODE_ROLE = { dept: '科室负责人', pharmacy: '药学部门', expert: '审批专家' };
@@ -282,8 +283,8 @@
       identifier: [{ value: opts.sqno }],
       status: opts.status,            // requested | in-progress | completed | rejected | cancelled
       intent: 'order',
-      authoredOn: opts.time,
-      businessStatus: { text: opts.businessStatus || '' },
+      authoredOn: R4.toInstant(opts.time),
+      businessStatus: opts.businessStatus,
       for: { reference: 'Patient/' + opts.patient },
       requester: { reference: 'Practitioner/' + opts.requester, display: opts.requesterName },
       ext: {
@@ -453,6 +454,9 @@
     }
     var rnd = mulberry32(20260615);
     var beds = global.Domain.DEPT_BEDS, doctorsMap = global.Domain.DEPT_DOCTORS;
+    // 用药记录是聚合统计的原始数据、量大；默认只进本地镜像，
+    // 由 fhir-config.json 的 persistUsageRecords 决定是否落服务端
+    var usageLocal = { local: !(global.AmrConfig && global.AmrConfig.get('persistUsageRecords')) };
     var medsByLevel = { unrestricted: [], restricted: [], special: [] };
     F.search('Medication').forEach(function (m) { medsByLevel[m.ext.level].push(m); });
 
@@ -498,7 +502,7 @@
               submitted: rnd() < SUBMIT_P[level],
               doctor: doc.name, doctorTitle: doc.title
             }
-          });
+          }, usageLocal);
         }
       });
     }
@@ -525,7 +529,7 @@
 
   /* -------------------- 15. 变更记录（Provenance） -------------------- */
   function prov(id, time, ptype, content, operator) {
-    F.seed({ resourceType: 'Provenance', id: id, recorded: time, ext: { changeType: ptype, content: content, operator: operator } });
+    F.seed({ resourceType: 'Provenance', id: id, recorded: R4.toInstant(time), ext: { changeType: ptype, content: content, operator: operator } });
   }
   // 系统参数变更记录
   prov('Provenance-p1', '2026-06-16 10:30', '职称权限', '副主任医师开放特殊使用级权限', '管理员李建国');

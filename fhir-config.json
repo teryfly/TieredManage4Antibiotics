@@ -1,0 +1,6 @@
+{
+  "fhirBase": "https://hapi.fhir.org/baseR4",
+  "mode": "remote",
+  "autoSeed": true,
+  "persistUsageRecords": false
+}

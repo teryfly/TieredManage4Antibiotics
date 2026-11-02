@@ -12,7 +12,12 @@
   <!-- 框架 -->
   <script src="lib/vue.global.prod.js"></script>
 
-  <!-- 数据层：FHIR 内存库 + 扩展机制 + 领域常量 + 资源定义 + 种子数据 + 服务层 -->
+  <!-- 配置层（HAPI 服务端地址可配置）与 FHIR 通信层：顺序即依赖顺序 -->
+  <script src="js/config.js"></script>
+  <script src="js/fhir-r4.js"></script>
+  <script src="js/fhir-client.js"></script>
+
+  <!-- 数据层：FHIR 资源库（本地镜像 + 异步写穿）+ 扩展机制 + 领域常量 + 资源定义 + 种子数据 + 服务层 -->
   <script src="js/fhir-store.js"></script>
   <script src="js/fhir-ext.js"></script>
   <script src="js/domain.js"></script>

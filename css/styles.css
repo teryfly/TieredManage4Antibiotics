@@ -269,3 +269,18 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--red); }
   .tab-layout { grid-template-columns: 1fr; }
   .nav { display: none; }
 }
+
+/* ---------- FHIR 服务端连接（r4-fhir-backend 分支） ---------- */
+.boot-mask { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 900; }
+.boot-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 28px 32px; width: min(560px, 92vw); color: var(--text); }
+.boot-title { font-size: 17px; font-weight: 700; margin-bottom: 18px; }
+.boot-step { font-size: 14px; margin-bottom: 12px; }
+.boot-step.err { color: var(--red); font-weight: 600; }
+.boot-bar { height: 6px; background: var(--primary-light); border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+.boot-bar > i { display: block; height: 100%; background: var(--primary); transition: width .25s ease; }
+.boot-err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; border-radius: 6px; padding: 10px 12px; font-size: 12px; margin: 10px 0; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow: auto; }
+.boot-acts { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.role-pill.conn-off { border-color: var(--gray); color: var(--gray); }
+.role-pill.conn-busy { border-color: var(--primary); color: var(--primary-dark); }
+.role-pill.conn-err { border-color: var(--red); color: var(--red); background: #fef2f2; }
+.txt-err { color: var(--red); }

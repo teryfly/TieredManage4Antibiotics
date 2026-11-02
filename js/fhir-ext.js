@@ -77,7 +77,13 @@
       if (v === undefined) return;
       var url = BASE + rt + '-' + field;
       var target = has(r.modifier, field) ? modifier : extension;
-      if (v === null) { target.push({ url: url, valueString: '' }); return; }
+      if (v === null) {
+        // 空 valueString 会被服务端当缺省丢掉，往返后就消失。声明为 JSON 的字段用
+        // 字面量 'null' 承载（可还原成真正的 null）；其余标量 null 直接省略，
+        // 上层读取这些字段时都做了存在性判断，缺失与 null 等价。
+        if (has(r.json, field)) target.push({ url: url, valueString: 'null' });
+        return;
+      }
       var isJson = has(r.json, field) ||
         (typeof v === 'object' && !Array.isArray(v)) ||
         (Array.isArray(v) && v.length && typeof v[0] === 'object');
