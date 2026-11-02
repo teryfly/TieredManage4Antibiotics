@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>抗菌药物分级管理制度闭环管理系统 · 原型演示</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- 框架 -->
+  <script src="lib/vue.global.prod.js"></script>
+
+  <!-- 数据层：FHIR 内存库 + 扩展机制 + 领域常量 + 资源定义 + 种子数据 + 服务层 -->
+  <script src="js/fhir-store.js"></script>
+  <script src="js/fhir-ext.js"></script>
+  <script src="js/domain.js"></script>
+  <script src="js/fhir-profiles.js"></script>
+  <script src="js/seed.js"></script>
+  <script src="js/services.js"></script>
+
+  <!-- 应用引导（先创建共享的 App / AMS 注册表，再加载组件填充） -->
+  <script src="js/app.js"></script>
+
+  <!-- 通用组件 -->
+  <script src="js/components/common.js"></script>
+
+  <!-- 页面组件 -->
+  <script src="js/components/home.js"></script>
+  <script src="js/components/auth-apply.js"></script>
+  <script src="js/components/auth-approve.js"></script>
+  <script src="js/components/catalog.js"></script>
+  <script src="js/components/perm-mapping.js"></script>
+  <script src="js/components/indication.js"></script>
+  <script src="js/components/monitor.js"></script>
+  <script src="js/components/report.js"></script>
+  <script src="js/components/gatekeep.js"></script>
+  <script src="js/components/workflow-config.js"></script>
+  <script src="js/components/sys-params.js"></script>
+
+  <!-- 启动应用 -->
+  <script>window.__BOOT_AMS__();</script>
+</body>
+</html>
