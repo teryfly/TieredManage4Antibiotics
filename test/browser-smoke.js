@@ -134,11 +134,12 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     cdp.on(m => {
       if (m.method === 'Runtime.exceptionThrown') {
         const d = m.params.exceptionDetails;
-        pageErrors.push(((d.exception && d.exception.description) || d.text || '').split('\n')[0]);
+        pageErrors.push('js: ' + (((d.exception && d.exception.description) || d.text || '').split('\n')[0]));
       } else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
-        pageErrors.push(m.params.entry.text);
+        const e = m.params.entry;
+        pageErrors.push('net: ' + e.text + ' ' + (e.url || ''));
       } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
-        pageErrors.push((m.params.args || []).map(a => a.value || a.description || '').join(' '));
+        pageErrors.push('console: ' + (m.params.args || []).map(a => a.value || a.description || '').join(' '));
       }
     });
 
@@ -178,6 +179,14 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     let navClicks = 0;
 
     for (const route of ['grade-rules', 'workflow-designer', 'order-demo', 'approval-center', 'demo-data', 'mobile-approval']) {
+      // 先切到该页面允许的身份，否则导航里根本不会出现这个入口
+      await evalJs(cdp, `(function(){
+        var role = (Domain.pageRoles('${route}') || [])[0];
+        var ident = role && Domain.firstIdentityOfRole(role);
+        if (ident) App.switchIdentity(ident.id);
+        return true;
+      })()`);
+      await wait(400);
       const info = await evalJs(cdp, `(function(){
         var def = (Domain.pageByRoute('${route}') || {}).page || {};
         var link = Array.prototype.slice.call(document.querySelectorAll('.nav-item a'))
@@ -187,11 +196,11 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
       })()`);
       await wait(700);
       const body = await evalJs(cdp, `document.querySelector('#app').innerText`);
-      ok(info.route === '${route}' && body.length > 60,
-        '页面没能打开或正文为空：${route}（route=' + info.route + '，text=' + body.length + '）');
+      ok(info.route === route && body.length > 60,
+        '页面没能打开或正文为空：' + route + '（route=' + info.route + '，text=' + body.length + '）');
       if (info.clicked) navClicks++;
     }
-    ok(navClicks >= 4, '多数页面不是靠真实点击导航的（点中 ' + navClicks + ' 个）');
+    ok(navClicks >= 5, '多数页面不是靠真实点击导航的（点中 ' + navClicks + ' 个）');
 
     /* 3. 身份切换（真实 select change 事件） */
     const sw = await evalJs(cdp, `(function(){
