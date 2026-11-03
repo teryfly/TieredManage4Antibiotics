@@ -29,6 +29,6 @@ npm-debug.log*
 Thumbs.db
 
 # 派生产物：由 npm run seed:export / scripts/demo_data.py 生成，不是数据源
-build/
+# build/
 __pycache__/
 *.pyc
