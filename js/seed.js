@@ -60,9 +60,9 @@
   /* -------------------- 4. 抗菌药物分级目录（Medication） -------------------- */
   // 默认分级映射（与权限映射 / 卡控规则联动）
   var LEVEL_DEFAULT = {
-    unrestricted: { titles: ['chief', 'associate', 'attending', 'resident'], approvals: [] },
+    'non-restricted': { titles: ['chief', 'associate', 'attending', 'resident'], approvals: [] },
     restricted: { titles: ['chief', 'associate', 'attending'], approvals: ['dept', 'pharmacy'] },
-    special: { titles: ['chief', 'associate'], approvals: ['dept', 'pharmacy', 'expert'] }
+    special: { titles: ['chief'], approvals: ['dept', 'pharmacy', 'expert'] }
   };
 
   // 药品补充信息（规格 / 商品名 / 生产企业 / 医保 / 库存），提升数据真实度
@@ -123,16 +123,16 @@
     });
   }
   // 非限制使用级
-  drug('Medication-1', '阿莫西林', '青霉素类', 'unrestricted', '敏感菌感染', '口服，成人0.5g/次，每8小时1次');
-  drug('Medication-2', '氨苄西林', '青霉素类', 'unrestricted', '敏感菌感染', '静脉滴注，成人2~4g/日');
-  drug('Medication-3', '青霉素G', '青霉素类', 'unrestricted', '敏感菌感染', '肌注/静滴，按医嘱');
-  drug('Medication-4', '头孢氨苄', '头孢菌素类（一代）', 'unrestricted', '敏感菌感染', '口服，0.25~0.5g/次');
-  drug('Medication-5', '头孢拉定', '头孢菌素类（一代）', 'unrestricted', '敏感菌感染', '口服，0.25~0.5g/次');
-  drug('Medication-6', '头孢唑林', '头孢菌素类（一代）', 'unrestricted', '手术预防用药', '静脉滴注，1~2g/次');
-  drug('Medication-7', '阿奇霉素', '大环内酯类', 'unrestricted', '呼吸道感染', '口服，0.5g/日');
-  drug('Medication-8', '红霉素', '大环内酯类', 'unrestricted', '敏感菌感染', '口服，按医嘱');
-  drug('Medication-9', '甲硝唑', '硝基咪唑类', 'unrestricted', '厌氧菌感染', '静滴/口服，按医嘱');
-  drug('Medication-10', '多西环素', '四环素类', 'unrestricted', '敏感菌感染', '口服，0.1g/次');
+  drug('Medication-1', '阿莫西林', '青霉素类', 'non-restricted', '敏感菌感染', '口服，成人0.5g/次，每8小时1次');
+  drug('Medication-2', '氨苄西林', '青霉素类', 'non-restricted', '敏感菌感染', '静脉滴注，成人2~4g/日');
+  drug('Medication-3', '青霉素G', '青霉素类', 'non-restricted', '敏感菌感染', '肌注/静滴，按医嘱');
+  drug('Medication-4', '头孢氨苄', '头孢菌素类（一代）', 'non-restricted', '敏感菌感染', '口服，0.25~0.5g/次');
+  drug('Medication-5', '头孢拉定', '头孢菌素类（一代）', 'non-restricted', '敏感菌感染', '口服，0.25~0.5g/次');
+  drug('Medication-6', '头孢唑林', '头孢菌素类（一代）', 'non-restricted', '手术预防用药', '静脉滴注，1~2g/次');
+  drug('Medication-7', '阿奇霉素', '大环内酯类', 'non-restricted', '呼吸道感染', '口服，0.5g/日');
+  drug('Medication-8', '红霉素', '大环内酯类', 'non-restricted', '敏感菌感染', '口服，按医嘱');
+  drug('Medication-9', '甲硝唑', '硝基咪唑类', 'non-restricted', '厌氧菌感染', '静滴/口服，按医嘱');
+  drug('Medication-10', '多西环素', '四环素类', 'non-restricted', '敏感菌感染', '口服，0.1g/次');
   // 限制使用级
   drug('Medication-11', '头孢呋辛', '头孢菌素类（二代）', 'restricted', '敏感菌感染', '静滴，0.75~1.5g/次');
   drug('Medication-12', '头孢克洛', '头孢菌素类（二代）', 'restricted', '敏感菌感染', '口服，0.25g/次');
@@ -215,47 +215,7 @@
     });
   });
 
-  /* -------------------- 9. 审批流程（PlanDefinition） -------------------- */
-  function node(seq, role, mode, approverType, approvers, hours, timeout) {
-    return { seq: seq, role: role, roleName: NODE_ROLE[role], mode: mode, approverType: approverType, approvers: approvers || [], hours: hours, timeout: timeout };
-  }
-  F.seed({
-    resourceType: 'PlanDefinition', id: 'PlanDefinition-restricted', status: 'active',
-    title: '限制使用级审批流程',
-    ext: {
-      level: 'restricted',
-      nodes: [
-        node(1, 'dept', 'or', 'auto', [], 24, '提醒并转交上级'),
-        node(2, 'pharmacy', 'or', 'assigned', ['张玉梅', '李药师'], 48, '提醒并转交科室负责人')
-      ],
-      scopeDrug: '该分级级别全部药品', scopeDept: '全院', applyTitles: ['chief', 'associate', 'attending'], extraCond: ''
-    }
-  });
-  F.seed({
-    resourceType: 'PlanDefinition', id: 'PlanDefinition-special', status: 'active',
-    title: '特殊使用级审批流程',
-    ext: {
-      level: 'special',
-      nodes: [
-        node(1, 'dept', 'or', 'auto', [], 24, '提醒并转交上级'),
-        node(2, 'pharmacy', 'or', 'assigned', ['张玉梅', '李药师'], 48, '提醒并转交科室负责人'),
-        node(3, 'expert', 'or', 'assigned', ['王建明', '陈志远'], 72, '提醒并标记超时待办')
-      ],
-      scopeDrug: '特殊使用级全部药品', scopeDept: '全院', applyTitles: ['chief', 'associate'], extraCond: '医师需具有高级职称（主任医师/副主任医师）'
-    }
-  });
-  F.seed({
-    resourceType: 'PlanDefinition', id: 'PlanDefinition-urgent', status: 'retired',
-    title: '紧急用药审批流程',
-    ext: {
-      level: 'special',
-      nodes: [
-        node(1, 'dept', 'or', 'auto', [], 2, '自动通过'),
-        node(2, 'expert', 'or', 'assigned', ['王建明'], 6, '提醒并标记超时待办')
-      ],
-      scopeDrug: '指定药品', scopeDept: '全院', applyTitles: ['chief', 'associate'], extraCond: '抢救场景'
-    }
-  });
+    /* -------------------- 9. 审批流程定义：改由第 18 节经 Approval 引擎按版本发布 -------------------- */
 
   /* -------------------- 10. 处方权限申请（Task） -------------------- */
   // 工作流节点：根据申请类型生成
@@ -457,25 +417,25 @@
     // 用药记录是聚合统计的原始数据、量大；默认只进本地镜像，
     // 由 fhir-config.json 的 persistUsageRecords 决定是否落服务端
     var usageLocal = { local: !(global.AmrConfig && global.AmrConfig.get('persistUsageRecords')) };
-    var medsByLevel = { unrestricted: [], restricted: [], special: [] };
+    var medsByLevel = { 'non-restricted': [], restricted: [], special: [] };
     F.search('Medication').forEach(function (m) { medsByLevel[m.ext.level].push(m); });
 
     // 各科室三级用药占比（ICU 危重症患者特殊使用级占比明显更高，符合临床实际）
     var LEVEL_WEIGHT = {
-      '内科': { unrestricted: 0.55, restricted: 0.35, special: 0.10 },
-      '外科': { unrestricted: 0.50, restricted: 0.38, special: 0.12 },
-      'ICU': { unrestricted: 0.20, restricted: 0.40, special: 0.40 },
-      '呼吸科': { unrestricted: 0.45, restricted: 0.40, special: 0.15 },
-      '骨科': { unrestricted: 0.60, restricted: 0.32, special: 0.08 },
-      '妇产科': { unrestricted: 0.65, restricted: 0.30, special: 0.05 }
+      '内科': { 'non-restricted': 0.55, restricted: 0.35, special: 0.10 },
+      '外科': { 'non-restricted': 0.50, restricted: 0.38, special: 0.12 },
+      'ICU': { 'non-restricted': 0.20, restricted: 0.40, special: 0.40 },
+      '呼吸科': { 'non-restricted': 0.45, restricted: 0.40, special: 0.15 },
+      '骨科': { 'non-restricted': 0.60, restricted: 0.32, special: 0.08 },
+      '妇产科': { 'non-restricted': 0.65, restricted: 0.30, special: 0.05 }
     };
-    var SUBMIT_P = { unrestricted: 0.55, restricted: 0.72, special: 0.88 }; // 分级越高，病原学送检率越高
-    var DDD_RANGE = { unrestricted: [0.4, 0.9], restricted: [0.8, 1.6], special: [1.2, 2.4] };
+    var SUBMIT_P = { 'non-restricted': 0.55, restricted: 0.72, special: 0.88 }; // 分级越高，病原学送检率越高
+    var DDD_RANGE = { 'non-restricted': [0.4, 0.9], restricted: [0.8, 1.6], special: [1.2, 2.4] };
 
     function pickLevel(weights) {
-      var x = rnd(), acc = 0, codes = ['unrestricted', 'restricted', 'special'];
+      var x = rnd(), acc = 0, codes = ['non-restricted', 'restricted', 'special'];
       for (var i = 0; i < codes.length; i++) { acc += weights[codes[i]]; if (x <= acc) return codes[i]; }
-      return 'unrestricted';
+      return 'non-restricted';
     }
     function fmtDate(d) { function p(n) { return String(n).padStart(2, '0'); } return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
 
@@ -488,7 +448,7 @@
         var n = 15 + Math.floor(rnd() * 25); // 每科每日 15~39 条给药记录，用药强度落在贴近真实院内基准（约 40 DDD/百床日）的区间
         for (var k = 0; k < n; k++) {
           var level = pickLevel(LEVEL_WEIGHT[dept]);
-          var pool = medsByLevel[level].length ? medsByLevel[level] : medsByLevel.unrestricted;
+          var pool = medsByLevel[level].length ? medsByLevel[level] : medsByLevel['non-restricted'];
           var med = pool[Math.floor(rnd() * pool.length)];
           var docs = doctorsMap[dept];
           var doc = docs[rnd() < 0.65 ? 0 : 1];
@@ -596,6 +556,7 @@
   });
   basic('role-permissions', {
     pages: {
+      'home': ['admin', 'ruleadmin', 'doctor', 'expert', 'pharmacy', 'flowviewer', 'quality'],
       'auth-apply': ['doctor'],
       'auth-approve': ['expert', 'pharmacy'],
       'catalog': ['admin', 'pharmacy'],
@@ -604,10 +565,319 @@
       'monitor': ['quality', 'pharmacy'],
       'report': ['quality', 'pharmacy'],
       'gatekeep': ['admin'],
-      'workflow-config': ['admin'],
-      'sys-params': ['admin']
+      'workflow-config': ['admin', 'ruleadmin'],
+      'sys-params': ['admin'],
+      'grade-rules': ['admin', 'ruleadmin'],
+      'physician-perm': ['admin', 'ruleadmin'],
+      'workflow-designer': ['admin', 'ruleadmin'],
+      'workflow-versions': ['admin', 'ruleadmin', 'flowviewer'],
+      'approval-center': ['expert', 'pharmacy', 'doctor', 'admin', 'ruleadmin', 'flowviewer'],
+      'mobile-approval': ['expert', 'pharmacy', 'doctor', 'admin', 'ruleadmin'],
+      'order-demo': ['doctor', 'admin', 'ruleadmin'],
+      'emergency-review': ['doctor', 'expert', 'admin', 'ruleadmin'],
+      'demo-data': ['admin', 'ruleadmin', 'flowviewer']
     }
   });
+
+  /* =====================================================================
+   * 18. SRS 演示数据集（SRS §11）：虚构医院与科室、PractitionerRole、患者与
+   *     门诊/住院/急诊就诊、MedicationKnowledge、等级与用药目的字典、三层授权
+   *     与合并优先级、版本化审批流程、以及经引擎生成的审批实例。
+   *     流程与实例一律调用 Approval 引擎生成 —— 初始化数据与运行时写入走同一条
+   *     代码路径，装载种子即等于验证了一遍引擎。
+   * ===================================================================== */
+  var A = global.Approval, LV = global.Domain;
+  function roleTitle(c) {
+    return { admin: '系统管理员', ruleadmin: '规则管理员', pharmacy: '药学部门', doctor: '医师',
+      expert: '审批专家', leader: '科室负责人', infection: '感染科医师', quality: '质控人员' }[c] || c;
+  }
+
+  /* 18.1 虚构医院与科室（名称一律带「演示」，SRS §11.1） */
+  F.seed({ resourceType: 'Organization', id: 'Organization-hospital-demo',
+    name: '演示医院（虚构）', identifier: [{ system: A.SYS.id, value: 'HOSP-DEMO' }],
+    type: [{ coding: [{ code: 'HOSP' }], text: '医院' }],
+    ext: { orgKind: 'hospital', kindDesc: '医院', demo: true, note: '仅用于演示，非真实医院' } });
+  var DEMO_ORGS = [
+    ['Organization-dept-demo-1', '呼吸内科（演示）', '临床科室'],
+    ['Organization-dept-demo-2', '普通外科（演示）', '临床科室'],
+    ['Organization-dept-demo-3', '重症医学科（演示）', '临床科室'],
+    ['Organization-dept-demo-4', '药事管理科（演示）', '药事管理 / 抗菌药物管理'],
+    ['Organization-dept-demo-5', '医务管理科（演示）', '医务管理'],
+    ['Organization-dept-demo-6', '感染科（演示）', '临床科室 / 审批科室'],
+    ['Organization-dept-demo-7', '医疗质量管理部（演示）', '质量管理']
+  ];
+  DEMO_ORGS.forEach(function (o) {
+    F.seed({ resourceType: 'Organization', id: o[0], name: o[1],
+      partOf: { reference: 'Organization/Organization-hospital-demo' },
+      identifier: [{ system: A.SYS.id, value: o[0].replace('Organization-', '') }],
+      type: [{ coding: [{ code: 'DEPT' }], text: o[2] }],
+      ext: { orgKind: 'department', kindDesc: o[2], demo: true, parent: 'Organization-hospital-demo' } });
+  });
+
+  /* 18.2 人员岗位 PractitionerRole：SRS §9.4 要求授权能反向查到
+   *      Practitioner / PractitionerRole / Organization。 */
+  var PRACT_PLACEMENT = [
+    ['Practitioner-9001', '李建国', 'Organization-dept-demo-5', null, ['admin', 'leader'], '演示医院管理办公室'],
+    ['Practitioner-9011', '王素芬', 'Organization-dept-demo-4', null, ['ruleadmin', 'pharmacy'], '药事管理科（演示）'],
+    ['Practitioner-9002', '张玉梅', 'Organization-dept-demo-4', null, ['pharmacy'], '药事管理科（演示）'],
+    ['Practitioner-1101', '李药师', 'Organization-dept-demo-4', null, ['pharmacy'], '药事管理科（演示）'],
+    ['Practitioner-9003', '王伟', 'Organization-dept-demo-1', 'attending', ['doctor'], '呼吸内科（演示）'],
+    ['Practitioner-1201', '陈慧兰', 'Organization-dept-demo-1', 'chief', ['leader', 'expert'], '呼吸内科（演示）'],
+    ['Practitioner-1002', '李娜', 'Organization-dept-demo-1', 'attending', ['doctor'], '呼吸内科（演示）'],
+    ['Practitioner-1001', '张建华', 'Organization-dept-demo-2', 'chief', ['doctor', 'leader'], '普通外科（演示）'],
+    ['Practitioner-1003', '赵磊', 'Organization-dept-demo-2', 'attending', ['doctor'], '普通外科（演示）'],
+    ['Practitioner-1005', '孙倩', 'Organization-dept-demo-2', 'attending', ['doctor'], '普通外科（演示）'],
+    ['Practitioner-1006', '周强', 'Organization-dept-demo-2', 'chief', ['doctor'], '普通外科（演示）'],
+    ['Practitioner-1004', '刘洋', 'Organization-dept-demo-3', 'associate', ['doctor'], '重症医学科（演示）'],
+    ['Practitioner-1202', '黄主任', 'Organization-dept-demo-3', 'chief', ['leader'], '重症医学科（演示）'],
+    ['Practitioner-9004', '陈志远', 'Organization-dept-demo-6', 'chief', ['expert', 'infection'], '感染科（演示）'],
+    ['Practitioner-1102', '王建明', 'Organization-dept-demo-6', 'chief', ['expert', 'infection'], '感染科（演示）'],
+    ['Practitioner-9005', '赵敏', 'Organization-dept-demo-7', null, ['quality'], '医疗质量管理部（演示）']
+  ];
+  PRACT_PLACEMENT.forEach(function (p) {
+    var exist = F.read('Practitioner', p[0]);
+    if (exist) {
+      exist.name = [{ text: p[1] }];
+      exist.ext = Object.assign({}, exist.ext, { dept: p[5], title: p[3], roleType: p[4][0], active: true, demo: true });
+      F.update(exist);
+    } else {
+      F.seed({ resourceType: 'Practitioner', id: p[0], name: [{ text: p[1] }],
+        ext: { dept: p[5], title: p[3], roleType: p[4][0], active: true, demo: true } });
+    }
+    F.seed({
+      resourceType: 'PractitionerRole', id: 'PractitionerRole-' + p[0].replace('Practitioner-', ''),
+      active: true,
+      practitioner: { reference: 'Practitioner/' + p[0], display: p[1] },
+      organization: { reference: 'Organization/' + p[2] },
+      code: p[4].map(function (c) {
+        return { coding: [{ system: A.CANON + '/CodeSystem/amr-role', code: c, display: roleTitle(c) }], text: roleTitle(c) };
+      }),
+      period: { start: '2026-01-01' },
+      ext: { roleType: p[4][0], roles: p[4], title: p[3] || '', orgId: p[2], orgName: p[5],
+        canApprove: p[4].some(function (c) { return ['leader', 'pharmacy', 'expert', 'infection'].indexOf(c) >= 0; }) }
+    });
+  });
+
+  /* 18.3 等级 / 用药目的 / 岗位角色字典（SRS §9.2 CodeSystem + ValueSet） */
+  F.seed({ resourceType: 'CodeSystem', id: 'CodeSystem-amr-level',
+    url: A.CANON + '/CodeSystem/amr-level', name: 'AntimicrobialGrade', title: '抗菌药物等级',
+    status: 'active', experimental: false, content: 'complete',
+    description: 'SRS §3.1 三级编码：non-restricted / restricted / special',
+    concept: LV.LEVELS.map(function (l) { return { code: l.code, display: l.name, definition: l.desc }; }) });
+  F.seed({ resourceType: 'ValueSet', id: 'ValueSet-amr-level',
+    url: A.CANON + '/ValueSet/amr-level', name: 'AntimicrobialGradeVS', title: '抗菌药物等级值集',
+    status: 'active', experimental: false,
+    compose: { include: [{ system: A.CANON + '/CodeSystem/amr-level' }] } });
+  F.seed({ resourceType: 'CodeSystem', id: 'CodeSystem-amr-purpose',
+    url: A.CANON + '/CodeSystem/amr-purpose', name: 'AntimicrobialPurpose', title: '抗菌药物使用目的（演示字典）',
+    status: 'active', experimental: false, content: 'complete',
+    description: 'SRS FR-010.7：演示用途分类为可维护示例，不代表采购文件规定了具体用途字典',
+    concept: LV.PURPOSES.map(function (p) { return { code: p.code, display: p.name, definition: p.desc }; }) });
+  F.seed({ resourceType: 'ValueSet', id: 'ValueSet-amr-purpose',
+    url: A.CANON + '/ValueSet/amr-purpose', name: 'AntimicrobialPurposeVS', title: '抗菌药物使用目的值集',
+    status: 'active', experimental: false,
+    compose: { include: [{ system: A.CANON + '/CodeSystem/amr-purpose' }] } });
+  var ROLE_CODES = LV.APPROVAL_ROLES.map(function (r) { return r; })
+    .concat([{ code: 'doctor', name: '医师' }, { code: 'admin', name: '系统管理员' },
+             { code: 'ruleadmin', name: '规则管理员' }, { code: 'quality', name: '质控人员' }]);
+  F.seed({ resourceType: 'CodeSystem', id: 'CodeSystem-amr-role',
+    url: A.CANON + '/CodeSystem/amr-role', name: 'AmrPractitionerRole',
+    title: '演示岗位角色（审批节点可按角色配置）',
+    status: 'active', experimental: false, content: 'complete',
+    concept: ROLE_CODES.map(function (r) { return { code: r.code, display: r.name }; }) });
+  F.seed({ resourceType: 'ValueSet', id: 'ValueSet-amr-role',
+    url: A.CANON + '/ValueSet/amr-role', name: 'AmrPractitionerRoleVS', title: '演示岗位角色值集',
+    status: 'active', experimental: false,
+    compose: { include: [{ system: A.CANON + '/CodeSystem/amr-role' }] } });
+
+  /* 18.4 MedicationKnowledge：药品知识与等级分类（SRS §9.3）。
+   * 目录内全部药品各建一条；其中三种作为 SRS §11.4 的演示用药 A/B/C。 */
+  var SRS_DEMO_DRUGS = {
+    '阿莫西林': { code: 'DEMO-AMR-A', grade: 'non-restricted', form: '胶囊' },
+    '头孢呋辛': { code: 'DEMO-AMR-B', grade: 'restricted', form: '注射剂' },
+    '美罗培南': { code: 'DEMO-AMR-C', grade: 'special', form: '注射剂' }
+  };
+  F.search('Medication').forEach(function (m, i) {
+    var demo = SRS_DEMO_DRUGS[m.code.text];
+    var form = demo ? demo.form : (m.ext.spec || '').indexOf('片') >= 0 ? '片剂'
+      : (m.ext.spec || '').indexOf('胶囊') >= 0 ? '胶囊' : '注射剂';
+    F.seed({
+      resourceType: 'MedicationKnowledge', id: 'MedicationKnowledge-' + (i + 1),
+      code: demo
+        ? { coding: [{ system: A.CANON + '/CodeSystem/amr-demo-drug', code: demo.code, display: m.code.text }], text: m.code.text }
+        : { text: m.code.text },
+      status: 'active',
+      synonym: [(m.ext.brand && m.ext.brand !== '—') ? m.ext.brand : m.code.text + '（演示）'],
+      doseForm: { coding: [{ code: 'df-' + i, display: form }], text: form },
+      amount: { description: { text: m.ext.spec || '—' } },
+      associatedMedication: [{ reference: 'Medication/' + m.id, display: m.code.text }],
+      medicineClassification: [{
+        type: { coding: [{ system: 'http://who.int/Classification/atc', code: 'atc', display: 'ATC 分类' }], text: 'ATC 分类' },
+        classification: { coding: [{ system: A.CANON + '/CodeSystem/amr-level', code: m.ext.level, display: LV.levelName(m.ext.level) }], text: m.ext.drugClass }
+      }],
+      ext: { level: m.ext.level, amrClass: m.ext.drugClass, demoCode: demo ? demo.code : '', demo: !!demo }
+    });
+    if (demo) {
+      m.ext.drugCode = demo.code;
+      m.ext.demoMark = '演示用药 ' + demo.code.slice(-1);
+      m.ext.doseFormCode = form;
+      F.update(m);
+    }
+  });
+
+  /* 18.5 患者与就诊（SRS §11.3） */
+  function encounter(id, patient, kind, practId, chief, bed, start, end) {
+    var cls = { outpatient: ['AMB', '门诊'], inpatient: ['IMP', '住院'], emergency: ['EMER', '急诊'] }[kind];
+    F.seed({
+      resourceType: 'Encounter', id: id, status: end ? 'finished' : 'in-progress',
+      class: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: cls[0], display: cls[1] }], text: cls[1] },
+      type: [{ coding: [{ code: kind, display: cls[1] }], text: cls[1] }],
+      subject: { reference: 'Patient/' + patient },
+      participant: [{ type: [{ coding: [{ code: 'LI', display: '主管医师' }] }], individual: { reference: 'Practitioner/' + practId } }],
+      period: end ? { start: start, end: end } : { start: start },
+      reasonCode: [{ text: chief }],
+      ext: { visitNo: id.replace('Encounter-', 'V'), kind: kind, kindName: cls[1], bed: bed || '', chief: chief, demo: true }
+    });
+  }
+  encounter('Encounter-1', 'Patient-1', 'outpatient', 'Practitioner-9003', '社区获得性肺炎，痰培养待回报', '', '2026-06-15T08:30:00', '');
+  encounter('Encounter-2', 'Patient-2', 'inpatient', 'Practitioner-1001', '腹腔感染，脓肿引流术后', 'A-1203', '2026-06-12T10:00:00', '');
+  encounter('Encounter-3', 'Patient-3', 'emergency', 'Practitioner-1004', '脓毒症休克，血培养阳性', 'E-01', '2026-06-14T22:10:00', '');
+  encounter('Encounter-4', 'Patient-6', 'inpatient', 'Practitioner-1004', '重症肺炎，呼吸衰竭', 'ICU-07', '2026-06-14T09:00:00', '');
+  encounter('Encounter-5', 'Patient-4', 'inpatient', 'Practitioner-9003', '皮肤软组织感染，MRSA 阳性', 'B-0312', '2026-05-28T14:00:00', '');
+  encounter('Encounter-6', 'Patient-5', 'outpatient', 'Practitioner-1002', '尿路感染', '', '2026-05-20T09:00:00', '');
+
+  /* 18.6 三层授权：职称规则（第 7 节）+ 科室授权 + 个人授权 + 合并优先级 */
+  function deptPerm(orgId, levels, note) {
+    var o = F.read('Organization', orgId);
+    F.seed({ resourceType: 'Permission', id: 'Permission-dept-' + orgId, status: 'active',
+      ext: { category: 'authorization', subjectType: 'department', level: '',
+        subjectRef: 'Organization/' + orgId, deptName: o ? o.name : orgId,
+        levels: levels, grantLabel: '科室授权', note: note, source: o ? o.name : orgId,
+        before: null, after: levels.map(LV.levelName).join('、') } });
+  }
+  function personPerm(practId, levels, grantLabel, expires, note) {
+    var p = F.read('Practitioner', practId);
+    F.seed({ resourceType: 'Permission', id: 'Permission-person-' + practId, status: 'active',
+      ext: { category: 'authorization', subjectType: 'person', level: '',
+        subjectRef: 'Practitioner/' + practId, practitionerName: p ? p.name[0].text : practId,
+        levels: levels, grantLabel: grantLabel, expires: expires || '', note: note,
+        source: p ? p.name[0].text : practId, before: null, after: levels.map(LV.levelName).join('、') } });
+  }
+  deptPerm('Organization-dept-demo-1', ['non-restricted', 'restricted'], '呼吸内科科室级授权：不含特殊使用级');
+  deptPerm('Organization-dept-demo-2', ['non-restricted', 'restricted', 'special'], '普通外科科室级授权：含特殊使用级（演示配置）');
+  deptPerm('Organization-dept-demo-3', ['non-restricted', 'restricted'], '重症医学科科室级授权：特殊使用级须审批');
+  deptPerm('Organization-dept-demo-6', ['non-restricted', 'restricted', 'special'], '感染科科室级授权：可承担特殊使用级审批');
+  personPerm('Practitioner-1004', ['non-restricted', 'restricted', 'special'], '重症感染专项特批（演示）', '2027-12-31',
+    '演示「个人授权」层：特批有效期内可直接开立特殊使用级');
+
+  /* 18.7 审批流程：版本化 PlanDefinition，全部经引擎发布为 V1 */
+  function publishFlow(purpose, level, title, nodes) {
+    var pd = A.newDraft({ purpose: purpose, level: level, title: title, nodes: nodes });
+    return A.publish(pd.id, { operator: '规则管理员·王素芬（演示初始化）', note: '演示初始流程' });
+  }
+  publishFlow('tier-approval', 'non-restricted', '非限制使用审批流程',
+    [A.mkNode(1, '药学部门备案', 'role', ['pharmacy'], { deadlineHours: 24 })]);
+  publishFlow('tier-approval', 'restricted', '限制使用审批流程',
+    [A.mkNode(1, '科室负责人审核', 'auto', [], { deadlineHours: 24, nodeCode: 'leader' }),
+     A.mkNode(2, '药学部门审核', 'role', ['pharmacy'], { deadlineHours: 48 })]);
+  publishFlow('tier-approval', 'special', '特殊使用审批流程',
+    [A.mkNode(1, '科室负责人审核', 'auto', [], { deadlineHours: 24, nodeCode: 'leader' }),
+     A.mkNode(2, '药学部门审核', 'role', ['pharmacy'], { deadlineHours: 48, actions: ['approve', 'reject', 'return'] }),
+     A.mkNode(3, '审批专家终审', 'role', ['expert'], { deadlineHours: 72, actions: ['approve', 'reject', 'return'] })]);
+  publishFlow('emergency-review', '', '紧急越级补审核流程',
+    [A.mkNode(1, '科室负责人补审核', 'auto', [], { isPostReview: true, deadlineHours: 24, nodeCode: 'leader',
+      description: 'SRS FR-008：紧急临时越级使用后 24 小时内补审核；节点与审批对象由流程配置确定' })]);
+  publishFlow('rx-permission', 'restricted', '限制使用级处方权限申请流程',
+    [A.mkNode(1, '科室负责人审核', 'auto', [], { deadlineHours: 24, nodeCode: 'leader' }),
+     A.mkNode(2, '药学部门审核', 'role', ['pharmacy'], { deadlineHours: 48 })]);
+  publishFlow('rx-permission', 'special', '特殊使用级处方权限申请流程',
+    [A.mkNode(1, '科室负责人审核', 'auto', [], { deadlineHours: 24, nodeCode: 'leader' }),
+     A.mkNode(2, '药学部门审核', 'role', ['pharmacy'], { deadlineHours: 48 }),
+     A.mkNode(3, '审批专家终审', 'role', ['expert'], { deadlineHours: 72 })]);
+  // DEMO-08 要「拖选新增人员/科室/角色节点并发布 V2」，这里留一份未发布草稿作为起点
+  A.newDraft({ purpose: 'tier-approval', level: 'special', title: '特殊使用审批流程（待扩展）',
+    fromId: A.currentVersion('tier-approval', 'special').id });
+
+  /* 18.8 经引擎生成的审批实例
+   * 演示口径：王伟（呼吸内科·主治）与李娜（呼吸内科·主治）对特殊使用级权限不足，
+   * 走审批流程；刘洋（ICU·副主任医师）持个人特批，可直接开立（DEMO-05）。 */
+  function seededOrder(practId, medId, opts) {
+    var med = F.read('Medication', medId);
+    var chk = A.check({ practitioner: practId, medicationId: medId });
+    var mr = A.createMedicationRequest({
+      medicationId: medId, requesterPractId: practId, patientId: opts.patient, encounterId: opts.encounter,
+      patientName: opts.patientName, mrn: opts.mrn, diagnosis: opts.diagnosis,
+      purposeCode: opts.purposeCode, purposeNote: opts.purposeNote, dosageText: med.ext.usage,
+      applicationReason: opts.reason, check: chk, orderStatus: 'pending-approval'
+    });
+    var inst = A.createInstance({ mr: mr, purpose: 'tier-approval', requesterPractId: practId,
+      applicationReason: opts.reason, check: chk });
+    return { mr: mr, chk: chk, inst: inst };
+  }
+
+  // —— 实例①：特殊使用级，三个节点全部通过（供 DEMO-15 关联核查） ——
+  var s1 = seededOrder('Practitioner-9003', 'Medication-21', {
+    patient: 'Patient-1', encounter: 'Encounter-1', patientName: '陈秀英', mrn: 'ZY20260615001',
+    diagnosis: '肺炎', purposeCode: 'mdr', purposeNote: '痰培养 ESBLs 阳性，经验治疗无效',
+    reason: '患者 ESBLs 阳性，重症社区获得性肺炎，常规抗菌治疗无效，依据药敏申请美罗培南'
+  });
+  A.act({ taskId: s1.inst.id, action: 'approve', operatorPractId: 'Practitioner-1201', comment: '同意，感染指标持续升高' });
+  A.act({ taskId: s1.inst.id, action: 'approve', operatorPractId: 'Practitioner-9002', comment: '符合特殊使用级用药指征' });
+  A.act({ taskId: s1.inst.id, action: 'approve', operatorPractId: 'Practitioner-9004', comment: '同意使用，7 天后评估降阶梯' });
+
+  // —— 实例②：停在药学部门节点（供 DEMO-10 开场即有待办） ——
+  var s2 = seededOrder('Practitioner-1002', 'Medication-27', {
+    patient: 'Patient-6', encounter: 'Encounter-4', patientName: '孙建国', mrn: 'ZY20260614005',
+    diagnosis: '重症肺炎', purposeCode: 'severe', purposeNote: '呼吸衰竭，痰培养多重耐药鲍曼不动杆菌',
+    reason: '重症肺炎伴呼吸衰竭，痰培养多重耐药鲍曼不动杆菌，申请替加环素'
+  });
+  A.act({ taskId: s2.inst.id, action: 'approve', operatorPractId: 'Practitioner-1201', comment: '病情危重，同意上报' });
+
+  // —— 实例③：被驳回（保留驳回原因，供 FR-007.8「修改后重新提交」） ——
+  var s3 = seededOrder('Practitioner-9003', 'Medication-22', {
+    patient: 'Patient-3', encounter: 'Encounter-3', patientName: '李秀兰', mrn: 'ZY20260608015',
+    diagnosis: '脓毒症', purposeCode: 'empirical', purposeNote: '血培养阳性，疑似产 ESBLs 菌',
+    reason: '脓毒症疑似产 ESBLs 菌，申请亚胺培南西司他丁'
+  });
+  A.act({ taskId: s3.inst.id, action: 'approve', operatorPractId: 'Practitioner-1201', comment: '同意上报' });
+  A.act({ taskId: s3.inst.id, action: 'reject', operatorPractId: 'Practitioner-9002',
+    comment: '缺少药敏报告，建议先完善病原学检查；当前可先用哌拉西林他唑巴坦覆盖' });
+
+  // —— 实例④：退回补充（演示节点配置的第三种动作） ——
+  var s4 = seededOrder('Practitioner-1002', 'Medication-21', {
+    patient: 'Patient-5', encounter: 'Encounter-6', patientName: '周丽', mrn: 'ZY20260520031',
+    diagnosis: '尿路感染', purposeCode: 'empirical', purposeNote: '尿培养大肠埃希菌，药敏待回报',
+    reason: '复杂尿路感染，经验性治疗效果不佳'
+  });
+  A.act({ taskId: s4.inst.id, action: 'approve', operatorPractId: 'Practitioner-1201', comment: '同意' });
+  A.act({ taskId: s4.inst.id, action: 'return', operatorPractId: 'Practitioner-9002', comment: '请补充近期尿培养与药敏结果' });
+
+  // —— 实例⑤：紧急越级临时使用 + 24 小时补审核（供 DEMO-12） ——
+  var em = A.createEmergency({
+    requesterPractId: 'Practitioner-9003', medicationId: 'Medication-24',
+    patientId: 'Patient-4', encounterId: 'Encounter-5', patientName: '赵德胜', mrn: 'ZY20260528022',
+    diagnosis: '皮肤软组织感染', purposeCode: 'mdr', purposeNote: '创面 MRSA 阳性',
+    dosageText: '静脉滴注，1g/次，每12小时',
+    emergencyReason: '患者感染性休克早期，创面培养 MRSA 阳性，情况紧急来不及完成事前审批',
+    clinicalNote: '已留取血培养 2 套与创面分泌物培养，按体重负荷给药，拟 48 小时后依据药敏调整',
+    applicationReason: '紧急越级使用万古霉素'
+  });
+  A.submitPostReviewMaterials(em.mainTask.id, {
+    病原学送检: '血培养 2 套 + 创面分泌物培养（已采集）',
+    用药前评估: 'GCS 13，MAP 62 mmHg，乳酸 4.1 mmol/L',
+    临床说明: '万古霉素 1g q12h 负荷给药，拟行血药浓度监测'
+  });
+
+  /* 18.9 演示配置单例 */
+  F.seed({ resourceType: 'Basic', id: 'Basic-demo-clock', code: { text: 'demo-clock' },
+    ext: { mode: 'live', offsetMinutes: 0, frozenAt: '', setBy: '演示初始化', setAt: '' } });
+  F.seed({ resourceType: 'Basic', id: 'Basic-authz-merge-priority', code: { text: 'authz-merge-priority' },
+    ext: { order: ['person', 'department', 'title'], emptyMeans: 'deny',
+      label: '个人授权 ＞ 科室授权 ＞ 职称规则（按顺序取第一个已配置且非空的层生效）',
+      note: 'SRS BR-002：采购文件未定义多条规则冲突时的优先级，故作为演示配置项并在界面展示命中层' } });
+  F.seed({ resourceType: 'Basic', id: 'Basic-emergency-config', code: { text: 'emergency-config' },
+    ext: { hours: 24, nearHours: 4, purpose: 'emergency-review',
+      note: 'SRS FR-008.4/FR-023.3：补审核期限与临近提醒阈值，可按医院制度调整' } });
 
   console.log('[seed] FHIR 内存库初始化完成：',
     Object.keys(F.dump()).map(function (t) { return t + '×' + F.count(t); }).join('  '));

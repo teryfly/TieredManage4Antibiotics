@@ -19,37 +19,11 @@ const ROOT = path.join(__dirname, '..');
 const BASE = process.env.FHIR_BASE || 'https://hapi.fhir.org/baseR4';
 const KEEP = process.argv.includes('--keep');
 
-/* ---------- 最小 window 垫片：数据层不依赖 DOM ---------- */
-const store = {};
-const win = {
-  location: { protocol: 'http:', search: '?mode=remote', hash: '', href: 'http://localhost/' },
-  localStorage: {
-    getItem: k => (k in store ? store[k] : null),
-    setItem: (k, v) => { store[k] = String(v); },
-    removeItem: k => { delete store[k]; }
-  },
-  addEventListener() {}, scrollTo() {},
-  fetch: (...a) => fetch(...a), AbortController, URLSearchParams, Promise, console,
-  setTimeout, clearTimeout, Date, JSON, Math, Object, Array, String, Number, Boolean, RegExp, Error
-};
-win.window = win;
-
-function load(rel) {
-  const code = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  new Function('window', 'global', 'location', 'localStorage', 'fetch', 'AbortController',
-    'URLSearchParams', 'console', code)(win, win, win.location, win.localStorage, win.fetch,
-    win.AbortController, win.URLSearchParams, win.console);
-}
-
-// app.js 里的全局对象在数据层被间接引用（services.js 取当前用户），此处给最小实现
-win.App = {
-  state: { roleCode: 'doctor' },
-  currentUser: () => ({ name: '测试员', display: '测试员', role: 'admin', title: 'chief', practitioner: 'Practitioner-9003' }),
-  toast() {}, bump() {}, navigate() {}
-};
-
-['js/config.js', 'js/fhir-r4.js', 'js/fhir-client.js', 'js/fhir-ext.js', 'js/domain.js',
- 'js/fhir-store.js', 'js/fhir-profiles.js', 'js/seed.js', 'js/services.js'].forEach(load);
+/* ---------- 用公共垫片装载数据层（含 clock.js / approval.js）---------- */
+const H = require('./harness');
+const win = H.makeWindow({ search: '?mode=remote', config: { mode: 'remote', demoScope: 'kjywfj-roundtrip' } });
+H.loadInto(win);
+H.stubApp(win, 'id-ruleadmin');
 
 const F = win.FHIR, R4 = win.FHIRR4, Conf = win.AmrConfig;
 
@@ -57,8 +31,18 @@ const R5_TYPES = ['Permission', 'Citation', 'ClinicalUseDefinition', 'MeasureRep
 const R4_STATUS = {
   Endpoint: ['active', 'construction', 'old-content', 'draft', 'failed', 'in-preparation', 'entered-in-error'],
   DetectedIssue: ['final', 'amended', 'corrected', 'registered', 'prevented', 'mitigated'],
-  Task: ['entered-in-error', 'stopped', 'on-hold', 'cancelled', 'rejected', 'unknown', 'completed',
-    'in-progress', 'pending', 'booked', 'arrived', 'received', 'accepted']
+  // R4 task-status 实测码表（draft,requested,received,accepted,rejected,ready,cancelled,
+  // in-progress,on-hold,failed,completed,entered-in-error）
+  Task: ['draft', 'requested', 'received', 'accepted', 'rejected', 'ready', 'cancelled',
+    'in-progress', 'on-hold', 'failed', 'completed', 'entered-in-error'],
+  // R4 request-status（服务端实测拒绝 revoked，接受 cancelled）
+  MedicationRequest: ['draft', 'active', 'on-hold', 'cancelled', 'completed', 'entered-in-error', 'unknown'],
+  Encounter: ['planned', 'arrived', 'in-progress', 'onleave', 'finished', 'cancelled', 'modified', 'entered-in-error', 'unknown'],
+  PlanDefinition: ['draft', 'active', 'retired', 'unknown'],
+  CommunicationRequest: ['draft', 'received', 'accepted', 'in-progress', 'on-hold', 'revoked', 'completed', 'entered-in-error', 'unknown'],
+  CodeSystem: ['draft', 'active', 'retired', 'unknown'],
+  ValueSet: ['draft', 'active', 'retired', 'unknown'],
+  PractitionerRole: undefined
 };
 
 let pass = 0, fail = 0;
@@ -80,7 +64,8 @@ function phaseA() {
       }
       const dump = JSON.stringify(wire);
       // FHIR 日期不允许出现「空格分隔的本地时间」写法
-      if (/"(authoredOn|recorded|identified|sent|effective|issued|created)":"[^"]*[ ][0-9]/.test(dump)) {
+      if (/"(authoredOn|recorded|identified|sent|effective|issued|created|occurred|lastUpdated|requestedOn)":"\d{4}-\d{2}-\d{2} [0-9]/.test(dump)
+        || /"(start|end|due|expiration|date)":"\d{4}-\d{2}-\d{2} [0-9]/.test(dump)) {
         badDates.push(wire.resourceType + '/' + wire.id);
       }
       if (R4_STATUS[wire.resourceType] && R4_STATUS[wire.resourceType].indexOf(wire.status) < 0) {
@@ -127,7 +112,17 @@ function buildSampleSet() {
   const perm = F.read('Permission', 'Permission-map-special');
   const cit = F.read('Citation', 'Citation-1');
   const cud = F.read('ClinicalUseDefinition', 'ClinicalUseDefinition-1');
-  const pln = F.read('PlanDefinition', 'PlanDefinition-special');
+  const pln = F.read('PlanDefinition', 'PlanDefinition-amr-tier-approval-special-v1');
+  const mk = F.read('MedicationKnowledge', 'MedicationKnowledge-21');
+  const prole = F.read('PractitionerRole', 'PractitionerRole-9003');
+  const enc = F.read('Encounter', 'Encounter-1');
+  const mrq = F.read('MedicationRequest', F.search('MedicationRequest')[0].id);
+  const flow = F.search('Task', t => t.ext && t.ext.taskKind === 'main')[0];
+  const node = F.search('Task', t => t.ext && t.ext.taskKind === 'node')[0];
+  const crq = F.read('CommunicationRequest', F.search('CommunicationRequest')[0].id);
+  const aud = F.read('AuditEvent', F.search('AuditEvent')[0].id);
+  const csy = F.read('CodeSystem', 'CodeSystem-amr-level');
+  const vs = F.read('ValueSet', 'ValueSet-amr-level');
   const det = F.read('DetectedIssue', 'DetectedIssue-1');
   const obs = F.read('Observation', 'Observation-s1');
   const com = F.read('Communication', F.search('Communication')[0].id);
@@ -136,13 +131,32 @@ function buildSampleSet() {
   const bas = F.read('Basic', 'Basic-catalog-version');
   const tas = F.read('Task', 'Task-1002');
 
-  const out = [org, pra, pat, med, perm, cit, cud, pln, det, obs, com, pro, eps, bas, tas];
+  const out = [org, pra, pat, med, mk, prole, enc, perm, cit, cud, pln, mrq, det, obs,
+    crq, com, pro, aud, eps, bas, tas, flow, node, csy, vs];
+  // 样例内部的引用一律改指向本轮前缀的同类资源；指向未纳入样例的资源由
+  // fhir-r4 的悬空引用处理省略（这些元素在 R4 里都是可选的）。
+  const keepTypes = { Organization: org.id, Practitioner: pra.id, Patient: pat.id,
+    Medication: med.id, Encounter: enc.id, MedicationRequest: mrq.id, Task: flow.id,
+    PlanDefinition: pln.id, Basic: bas.id, CommunicationRequest: crq.id };
+  const refs = ['requester', 'performer', 'owner', 'subject', 'for', 'patient', 'medicationReference',
+    'medicationCodeableConcept', 'encounter', 'focus', 'which', 'author', 'recorder', 'sent', 'recipient',
+    'sender', 'about', 'individual', 'organization', 'practitioner', 'basedOn', 'partOf', 'instantiatesCanonical',
+    'agent', 'who', 'observer', 'entity', 'what', 'source', 'component', 'associatedMedication'];
+  function rewrite(node2, depth) {
+    if (!node2 || typeof node2 !== 'object' || depth > 5) return;
+    if (Array.isArray(node2)) { node2.forEach(n2 => rewrite(n2, depth + 1)); return; }
+    Object.keys(node2).forEach(k => {
+      const v = node2[k];
+      const m = v && typeof v === 'object' && typeof v.reference === 'string'
+        ? /^([A-Za-z]+)\/([^/]+)$/.exec(v.reference) : null;
+      if (m && keepTypes[m[1]] && refs.indexOf(k) >= 0) v.reference = m[1] + '/' + prefixed(keepTypes[m[1]]);
+      else rewrite(v, depth + 1);
+    });
+  }
   out.forEach(r => {
     r.id = prefixed(r.id);
     r.meta = {};
-    if (r.requester) r.requester.reference = 'Practitioner/' + prefixed('Practitioner-9003');
-    if (r.for) r.for.reference = 'Patient/' + prefixed('Patient-1');
-    if (r.which) r.which.reference = 'Organization/' + prefixed('Organization-pharmacy');
+    rewrite(r, 0);
     tagContent(r, TAG);
   });
   return out;
@@ -160,9 +174,11 @@ async function phaseB() {
   F.reset();
   F.setMode('remote', BASE);
 
-  const order = ['Organization', 'Practitioner', 'Patient', 'Medication', 'Basic',
-    'PlanDefinition', 'DetectedIssue', 'Observation', 'Communication', 'Provenance',
-    'Endpoint', 'Task', 'Permission', 'Citation', 'ClinicalUseDefinition'];
+  const order = ['Organization', 'Practitioner', 'Patient', 'Medication', 'MedicationKnowledge',
+    'PractitionerRole', 'Encounter', 'Basic', 'PlanDefinition', 'MedicationRequest',
+    'DetectedIssue', 'Observation', 'Task', 'CommunicationRequest', 'Communication',
+    'Provenance', 'AuditEvent', 'Endpoint', 'CodeSystem', 'ValueSet',
+    'Permission', 'Citation', 'ClinicalUseDefinition'];
   samples.sort((a, b) => order.indexOf(a.resourceType) - order.indexOf(b.resourceType));
   samples.forEach(r => F.create(r));
 
@@ -238,19 +254,24 @@ async function phaseB() {
 async function cleanup() {
   if (KEEP) { console.log('\n--keep：保留 ' + written.length + ' 个测试资源'); return; }
   console.log('\n== 清理测试资源 ==');
-  let gone = 0, left = [];
-  // 按写入的逆序删除：服务端有引用完整性约束，被引用的资源要等引用方先消失
-  for (const w of written.slice().reverse()) {
-    try { await win.FHIRClient.remove(BASE, w.type, w.id); gone++; }
-    catch (e) { left.push(w.type + '/' + w.id + ' ' + e.status); }
+  let queue = written.slice().reverse(), left = [];
+  // 按写入的逆序删除；服务端有引用完整性约束，被引用方要等引用方先消失，故再轮一遍
+  for (let round = 1; round <= 3 && queue.length; round++) {
+    left = [];
+    for (const w of queue) {
+      try { await win.FHIRClient.remove(BASE, w.type, w.id); }
+      catch (e) { if (e.status !== 404 && e.status !== 410) left.push(w); }
+    }
+    console.log('  第 ' + round + ' 轮删除 ' + (queue.length - left.length) + '/' + queue.length
+      + ' 条' + (left.length ? '，被引用保护拦下 ' + left.length + ' 条' : ''));
+    queue = left.slice().reverse();
   }
   const still = [];
   for (const w of written) {
     try { await win.FHIRClient.get(BASE, w.type, w.id); still.push(w.type + '/' + w.id); }
     catch (e) { /* 404/410 表示已不可读 */ }
   }
-  console.log('  已删除 ' + gone + '/' + written.length + (left.length ? '，失败：' + left.join(', ') : ''));
-  console.log('  复查仍可读：' + (still.length ? still.join(', ') : '无'));
+  ok(!still.length, '清理后服务端仍可读到 ' + still.length + ' 个测试资源：' + still.slice(0, 8).join(', '));
 }
 
 (async () => {

@@ -54,7 +54,7 @@
   C['level-tag'] = {
     props: { level: String },
     computed: {
-      cls: function () { return { unrestricted: 'green', restricted: 'orange', special: 'red' }[this.level] || 'gray'; },
+      cls: function () { return { 'non-restricted': 'green', restricted: 'orange', special: 'red' }[this.level] || 'gray'; },
       name: function () { return global.Domain.levelName(this.level); }
     },
     template: `<span class="tag" :class="cls">{{ name }}</span>`

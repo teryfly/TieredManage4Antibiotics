@@ -17,7 +17,7 @@
         query: { keyword: '', drugClass: 'all', level: 'all' },
         page: 1, size: 20,
         showHistory: false,
-        showEdit: false, showDetail: false, showImport: false,
+        showEdit: false, showDetail: false, showImport: false, checkDoctor: '',
         isNew: true, editLevelOriginal: '',
         current: null,
         form: this.blank(),
@@ -159,16 +159,27 @@
       save: function () {
         if (!this.validate()) { App.toast('请完善必填信息', 'error'); return; }
         // 编辑模式下级别变更需二次确认
-        if (!this.isNew && this.form.ext.level !== this.editLevelOriginal) {
-          if (!confirm('变更分类级别将影响已关联的权限映射规则和适应症校验，是否继续？')) return;
+        var levelChanged = !this.isNew && this.form.ext.level !== this.editLevelOriginal;
+        if (levelChanged) {
+          var imp = Svc.srs.gradeImpact(this.form.ext.level);
+          var msg = '等级将由「' + D.levelName(this.editLevelOriginal) + '」调整为「' + D.levelName(this.form.ext.level) + '」。\n'
+            + '· 新的开单请求将使用调整后的等级进行权限判断；\n'
+            + '· 已提交审批的请求保留创建时的药品等级快照，不会被改写（SRS FR-004.5 / FR-001.7）；\n'
+            + '· 目标等级当前有 ' + imp.runningCount + ' 件进行中的审批，调整不影响它们。\n\n确认继续？';
+          if (!confirm(msg)) return;
         }
         Svc.saveMedication({ id: this.form.id, name: this.form.name, ext: this.form.ext }, this.isNew);
+        if (levelChanged) {
+          Svc.srs.setDrugGrade(this.form.id, this.form.ext.level, '在目录编辑中调整等级');
+        }
         this.showEdit = false;
         App.toast(this.isNew ? '药品已新增，目录版本已更新' : '药品已保存，目录版本已更新');
         if (this.isNew) this.page = 1;
       },
       // 详情
-      openDetail: function (m) { this.current = m; this.showDetail = true; },
+      openDetail: function (m) { this.current = m; this.checkDoctor = ''; this.showDetail = true; },
+      isEnabled: function (m) { return m.ext.enabled !== false && m.status === 'active'; },
+      doseForm: function (m) { return m.ext.doseFormCode || ((m.ext.spec || '').indexOf('片') >= 0 ? '片剂' : ((m.ext.spec || '').indexOf('胶囊') >= 0 ? '胶囊' : '注射剂')); },
       editFromDetail: function () {
         var m = this.current;
         this.showDetail = false;
@@ -219,7 +230,7 @@
         var lines = text.split(/\r\n|\n|\r/).filter(function (l) { return l.trim().length; });
         if (!lines.length) { this.importRows = []; this.importSummary = { total: 0, matched: 0, needConfirm: 0, error: 0 }; return; }
         var header = lines[0].split(/[,\t]/).map(function (s) { return s.trim(); });
-        var LEVEL_MAP = { '非限制使用级': 'unrestricted', '限制使用级': 'restricted', '特殊使用级': 'special', unrestricted: 'unrestricted', restricted: 'restricted', special: 'special' };
+        var LEVEL_MAP = { '非限制使用级': 'non-restricted', '限制使用级': 'restricted', '特殊使用级': 'special', 'non-restricted': 'non-restricted', restricted: 'restricted', special: 'special' };
         var rows = lines.slice(1).map(function (line) {
           var cols = line.split(/[,\t]/).map(function (s) { return s.trim(); });
           var row = {}; header.forEach(function (h, i) { row[h] = cols[i] || ''; });
@@ -308,7 +319,7 @@
         <div class="card-body">
           <div class="filter-bar">
             <button class="chip" :class="{active:filter.level==='all'}" @click="pickLevel('all')">全部 ({{ counts.all }})</button>
-            <button class="chip" :class="{active:filter.level==='unrestricted'}" @click="pickLevel('unrestricted')">非限制使用级 ({{ counts.unrestricted }})</button>
+            <button class="chip" :class="{active:filter.level==='non-restricted'}" @click="pickLevel('non-restricted')">非限制使用级 ({{ counts.non-restricted }})</button>
             <button class="chip" :class="{active:filter.level==='restricted'}" @click="pickLevel('restricted')">限制使用级 ({{ counts.restricted }})</button>
             <button class="chip" :class="{active:filter.level==='special'}" @click="pickLevel('special')">特殊使用级 ({{ counts.special }})</button>
           </div>
@@ -321,13 +332,18 @@
         <div class="card-body" style="padding:0">
           <div class="table-wrap">
             <table class="tbl" v-if="paged.length">
-              <thead><tr><th>药品名称</th><th>药品分类</th><th>分级级别</th><th>适应症摘要</th><th>操作</th></tr></thead>
+              <thead><tr><th>药品名称 / 通用名</th><th>药品编码</th><th>剂型 / 规格</th><th>药品分类</th>
+                <th>抗菌药物等级</th><th>适应症摘要</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
                 <tr v-for="m in paged">
-                  <td>{{ m.code.text }}<span class="muted" v-if="m.ext.brand && m.ext.brand!=='—'" style="font-size:11px"> · {{ m.ext.brand }}</span></td>
+                  <td>{{ m.code.text }}<span class="muted" v-if="m.ext.brand && m.ext.brand!=='—'" style="font-size:11px"> · {{ m.ext.brand }}</span>
+                    <div class="muted" style="font-size:11px" v-if="m.ext.demoMark">{{ m.ext.demoMark }}（虚构演示数据）</div></td>
+                  <td class="nowrap">{{ m.ext.drugCode || m.id }}</td>
+                  <td>{{ doseForm(m) }} / {{ m.ext.spec }}</td>
                   <td>{{ m.ext.drugClass }}</td>
                   <td><level-tag :level="m.ext.level"></level-tag></td>
                   <td>{{ m.ext.indicationSummary }}</td>
+                  <td><span class="tag" :class="isEnabled(m)?'green':'gray'">{{ isEnabled(m)?'在用':'停用' }}</span></td>
                   <td class="actions">
                     <a class="btn-link" @click="openDetail(m)">详情</a>
                     <a class="btn-link" @click="openEdit(m)">编辑</a>
@@ -483,6 +499,33 @@
         <div class="kv">
           <span class="k">可开具职称</span><span>{{ (current.ext.allowedTitles||[]).map(titleName).join('、') || '—' }}</span>
           <span class="k">审批要求</span><span>{{ (current.ext.approvals||[]).map(approvalName).join('、') || '无需审批' }}</span>
+        </div>
+
+        <div class="divider-label">抗菌药物等级与权限规则（SRS FR-004.3）</div>
+        <div class="kv" v-if="permView">
+          <span class="k">生效等级</span><span><level-tag :level="permView.grade"></level-tag> {{ D.levelName(permView.grade) }}</span>
+          <span class="k">等级生效来源</span><span class="muted">{{ permView.drug.levelSource }}（{{ permView.drug.levelSource === 'Medication（药品）' ? '目录条目' : '药品知识条目' }}）</span>
+          <span class="k">该等级可开具职称</span><span>{{ permView.allowedTitles.map(titleName).join('、') || '—' }}</span>
+          <span class="k">该等级审批要求</span><span>{{ permView.approvalNodes.join('、') || '无需审批' }}</span>
+          <span class="k">超权限时走的流程</span>
+          <span><template v-if="permView.flow">{{ permView.flow.ext.title }} V{{ permView.flow.version }}
+            <span class="muted">（{{ permView.flow.ext.nodes.filter(function(n){return n.type!=='start'&&n.type!=='end';}).map(function(n){return n.name;}).join(' → ') }}）</span></template>
+            <span v-else class="tag orange">该等级尚未发布审批流程</span></span>
+          <span class="k">演示数据标识</span><span class="muted">本药品为虚构演示数据，不代表医院真实用药目录（SRS FR-004.4 / BR-010）</span>
+        </div>
+        <div class="divider-label">按医师验证权限</div>
+        <div class="filter-bar">
+          <div class="field"><label>选择医师</label>
+            <select v-model="checkDoctor">
+              <option value="">请选择</option>
+              <option v-for="doc in doctorOptions" :value="doc.id">{{ doc.name }} · {{ D.titleName(doc.title) }} · {{ doc.dept }}</option>
+            </select></div>
+        </div>
+        <div class="kv" v-if="doctorCheck">
+          <span class="k">判定结果</span><span><span class="tag" :class="doctorCheck.allowed?'green':'red'">{{ doctorCheck.allowed ? '权限符合' : '权限不足' }}</span></span>
+          <span class="k">医师可用等级</span><span>{{ doctorCheck.allowedLevels.map(D.levelName).join('、') || '无' }}</span>
+          <span class="k">命中授权层</span><span>{{ doctorCheck.hit.srcLabel }} — {{ doctorCheck.hit.ruleText }}</span>
+          <span class="k">说明</span><span class="muted">{{ doctorCheck.reason }}</span>
         </div>
         <template #foot>
           <button class="btn" @click="editFromDetail">编辑</button>

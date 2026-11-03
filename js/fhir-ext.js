@@ -25,29 +25,57 @@
    *   json    ：复杂嵌套字段，以 valueString 承载 JSON
    * 未列出的字段按 JS 类型自动编码为标量扩展。 */
   var REGISTRY = {
-    Practitioner: {},
+    Practitioner: { list: [] },
+    PractitionerRole: { list: ['code', 'roles'] },
     Patient: {},
+    Encounter: { list: ['typeCodes'], json: ['period'] },
     Organization: {},
     Medication: { modifier: ['level', 'allowedTitles', 'approvals'], list: ['allowedTitles', 'approvals', 'indications'] },
+    MedicationKnowledge: { modifier: ['level'], list: ['levelCodes'] },
+    MedicationRequest: {
+      modifier: ['emergency'],
+      list: ['purposeCodes'],
+      json: ['purpose', 'gradeSnapshot', 'authzHit', 'dosage']
+    },
     Citation: {},
     ClinicalUseDefinition: { list: ['citations'] },
-    Permission: { modifier: ['interceptOnTitleMismatch', 'interceptOnNotApproved'], list: ['allowedTitles', 'approvals', 'approvalCheck'] },
-    PlanDefinition: { list: ['applyTitles'], json: ['nodes'] },
-    Task: { modifier: ['type'], json: ['flow', 'decision'] },
+    Permission: {
+      modifier: ['interceptOnTitleMismatch', 'interceptOnNotApproved'],
+      list: ['allowedTitles', 'approvals', 'approvalCheck', 'levels'],
+      json: ['before', 'after']
+    },
+    PlanDefinition: {
+      modifier: ['purpose'],
+      list: ['applyTitles', 'nodeSeqs'],
+      json: ['nodes', 'rollbackFrom', 'publishInfo']
+    },
+    Task: {
+      modifier: ['type', 'isPostReview'],
+      list: ['assigneeIds', 'assigneeBasis', 'nodeSeqs', 'purposeCodes'],
+      json: ['flow', 'decision', 'node', 'actedBy', 'postReview', 'assignees',
+        'gradeSnapshot', 'authzHit', 'purposeInfo', 'targetList']
+    },
+    CommunicationRequest: { list: ['recipient'] },
     DetectedIssue: { json: ['detail'] },
     Observation: {},
     MeasureReport: { json: ['indicators', 'catalogStats', 'departmentRanking', 'trend', 'summary', 'deptDetail', 'doctorRx', 'drugUse'] },
     Communication: {},
-    Provenance: {},
+    Provenance: { json: ['targetList'] },
+    // AuditEvent 的 agent/entity 是顶层标准元素，不进 ext，故无需 json 声明
+    AuditEvent: {},
+    CodeSystem: { json: ['concepts'] },
+    ValueSet: { json: ['compose'] },
     Endpoint: {},
-    Basic: { json: ['scope', 'records', 'rules', 'items', 'byDept'] }
+    Basic: { json: ['scope', 'records', 'rules', 'items', 'byDept', 'order', 'priority'] }
   };
 
   // 应编码为 valueCode（编码型）而非 valueString 的字段
   var CODE_FIELDS = {
     level: 1, type: 1, category: 1, roleType: 1, title: 1, requesterTitle: 1, rational: 1,
     interceptOnTitleMismatch: 1, interceptOnNotApproved: 1,
-    allowedTitles: 1, approvals: 1, approvalCheck: 1, applyTitles: 1
+    allowedTitles: 1, approvals: 1, approvalCheck: 1, applyTitles: 1,
+    purpose: 1, assigneeType: 1, flowStatus: 1, mrStatus: 1, subjectType: 1,
+    authzLayer: 1, nodeCode: 1, basis: 1, action: 1, nodeState: 1, connStatus: 1, issueStatus: 1
   };
 
   function reg(rt) { return REGISTRY[rt] || {}; }

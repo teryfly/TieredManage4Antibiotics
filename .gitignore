@@ -27,3 +27,8 @@ npm-debug.log*
 *.swp
 .DS_Store
 Thumbs.db
+
+# 派生产物：由 npm run seed:export / scripts/demo_data.py 生成，不是数据源
+build/
+__pycache__/
+*.pyc

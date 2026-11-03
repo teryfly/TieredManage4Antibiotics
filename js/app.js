@@ -11,7 +11,9 @@
     _vm: null,
     state: Vue.reactive({
       roleCode: 'doctor',     // 默认以“医师”身份进入，便于演示申请→审批主流程
+      identityId: 'id-doctor-low',  // 同一角色可有多个演示身份（SRS §11.2），身份决定权限
       route: 'home',
+      refreshing: false,
       refresh: 0,
       toasts: [],
       showNotif: false,
@@ -21,12 +23,19 @@
       boot: { phase: 'idle', error: null, stats: null },
       sync: null
     }),
+    /* 当前登录身份：DEMO-09/10 需要依次用「人员/科室/角色」三种审批人账号
+     * 打开待办，所以角色下必须能选到具体某一个人。 */
     currentUser: function () {
-      var rc = this.state.roleCode;
-      return D.DEMO_USERS.filter(function (u) { return u.role === rc; })[0];
+      var id = this.state.identityId;
+      var u = D.identity(id);
+      if (!u) u = D.firstIdentityOfRole(this.state.roleCode);
+      if (u && u.role !== this.state.roleCode) this.state.roleCode = u.role;
+      return u || D.identity('id-admin');
     },
     switchRole: function (rc) {
+      var u = D.firstIdentityOfRole(rc);
       this.state.roleCode = rc;
+      this.state.identityId = u.id;
       this.state.showNotif = false;
       // 切换角色后若当前页不可访问则回到首页
       if (this.state.route !== 'home' && !D.canAccess(rc, this.state.route)) {
@@ -34,8 +43,17 @@
       } else {
         this.bump();
       }
-      var u = this.currentUser();
-      this.toast('已切换为「' + D.roleName(rc) + '」· ' + u.name, 'info');
+      this.toast('已切换为「' + D.roleName(rc) + '」· ' + u.display, 'info');
+    },
+    switchIdentity: function (identityId) {
+      var u = D.identity(identityId);
+      if (!u) return;
+      this.state.identityId = identityId;
+      this.state.roleCode = u.role;
+      this.state.showNotif = false; this.state.showUserMenu = false;
+      if (this.state.route !== 'home' && !D.canAccess(u.role, this.state.route)) this.navigate('home');
+      else this.bump();
+      this.toast('当前身份：' + u.display + '（' + u.dept + '）', 'info');
     },
     navigate: function (route) {
       if (route !== 'home' && !D.canAccess(this.state.roleCode, route)) {
@@ -95,6 +113,34 @@
       }).catch(function (err) {
         self.toast('配置有误：' + err.message, 'error');
         throw err;
+      });
+    },
+
+    /* SRS FR-009.8：本演示的跨用户更新通过「重新查询 FHIR 服务端」实现。
+     * 审批人员点一下刷新即可看到医师刚发起的待办，不需要重新登录。 */
+    refreshFromServer: function (types) {
+      var self = this;
+      var st = global.FHIR.stats();
+      if (st.mode !== 'remote') {
+        this.bump();
+        this.toast('本地演示模式：数据只在当前浏览器内存中', 'info');
+        return Promise.resolve({ refreshed: 0 });
+      }
+      if (this.state.refreshing) return Promise.resolve({ refreshed: 0 });
+      this.state.refreshing = true;
+      var list = types || ['Task', 'CommunicationRequest', 'Communication', 'MedicationRequest',
+        'PlanDefinition', 'Basic', 'Provenance', 'MedicationAdministration'];
+      return global.FHIR.refreshTypes(list).then(function (r) {
+        self.state.refreshing = false;
+        self.bump();
+        var bad = (r.failed || []).length;
+        self.toast('已从服务端读取 ' + r.refreshed + ' 条资源'
+          + (bad ? '，' + bad + ' 个类型读取失败' : ''), bad ? 'error' : 'success');
+        return r;
+      }, function (err) {
+        self.state.refreshing = false;
+        self.toast('刷新失败：' + err.message, 'error');
+        return { refreshed: 0, error: err.message };
       });
     }
   };
@@ -160,6 +206,11 @@
       user: function () { return App.currentUser(); },
       role: function () { return App.state.roleCode; },
       roles: function () { return D.ROLES; },
+      identityGroups: function () {
+        return D.ROLES.map(function (r) {
+          return { code: r.code, name: r.icon + ' ' + r.name, users: D.identities(r.code) };
+        }).filter(function (g) { return g.users.length; });
+      },
       modules: function () { return D.visibleModules(this.role); },
       pageComp: function () { return 'page-' + App.state.route; },
       crumb: function () {
@@ -210,6 +261,13 @@
       toastRetryFail: function () { App.toast('仍然连不上服务端，可改用本地演示模式', 'error'); },
       useLocal: function () { App.useLocalFallback(); },
       switchRole: function (r) { App.switchRole(r); },
+      switchIdentity: function (id) { App.switchIdentity(id); },
+      refreshNow: function () { App.refreshFromServer(); },
+      openMobile: function () {
+        // 移动端工作台是同一条前端路由（SRS FR-017.8：允许共用同一程序），
+        // 用新窗口打开便于「桌面 + 手机」同屏演示同一个 FHIR Task
+        window.open(location.pathname + '#/mobile-approval' + location.search, '_blank');
+      },
       modulePages: function (m) {
         var role = this.role;
         return m.pages.filter(function (p) { return D.pageRoles(p.route).indexOf(role) >= 0; });
@@ -300,18 +358,29 @@
         </div>
       </header>
 
-      <!-- 演示角色切换条 -->
+      <!-- 演示身份切换条：角色 → 该角色下的具体演示账号（同一人可兼任多角色） -->
       <div class="role-switch">
         <div class="role-switch-inner">
-          <span class="label">🎭 演示角色切换：</span>
+          <span class="label">🎭 演示角色：</span>
           <span class="role-pill" v-for="r in roles" :class="{active: r.code===role}" @click="switchRole(r.code)">
             {{ r.icon }} {{ r.name }}
           </span>
+          <span class="label" style="margin-left:10px">当前身份：</span>
+          <select class="identity-pick" :value="s.identityId" @change="switchIdentity($event.target.value)">
+            <optgroup v-for="g in identityGroups" :label="g.name">
+              <option v-for="u in g.users" :value="u.id">{{ u.display }} · {{ u.dept }}</option>
+            </optgroup>
+          </select>
           <div style="flex:1"></div>
+          <span class="role-pill" :class="{'conn-busy': s.refreshing}" @click="refreshNow"
+                title="重新查询 FHIR 服务端，同步其他身份发起的申请与审批（SRS FR-009.8）">
+            {{ s.refreshing ? '🔄 正在读取服务端…' : '🔄 刷新数据' }}
+          </span>
           <span class="role-pill" :class="connPillClass" @click="openServer"
                 :title="sync.server || '未连接服务端'">
             {{ connPillText }}
           </span>
+          <span class="role-pill" @click="openMobile" title="在新窗口打开移动端审批工作台">📱 移动端审批</span>
           <span class="role-pill" @click="openFhir" title="查看底层 FHIR 标准资源">🔍 FHIR 资源</span>
         </div>
       </div>

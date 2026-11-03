@@ -25,7 +25,7 @@
           { code: 'provenance', name: '参数变更记录' }
         ],
         // Tab1 编辑弹框
-        showPriv: false, privTitle: '', privForm: { unrestricted: false, restricted: false, special: false }, privOriginal: { unrestricted: false, restricted: false, special: false },
+        showPriv: false, privTitle: '', privForm: { 'non-restricted': false, restricted: false, special: false }, privOriginal: { 'non-restricted': false, restricted: false, special: false },
         // Tab2（用户角色权限）工作副本
         rolePerm: null,
         // Tab3 工作副本
@@ -58,7 +58,7 @@
       privImpact: function () { return Svc.titleImpact(this.privTitle); },
       privRevoked: function () {
         var o = this.privOriginal, f = this.privForm, out = [];
-        ['unrestricted', 'restricted', 'special'].forEach(function (k) { if (o[k] && !f[k]) out.push(D.levelName(k)); });
+        ['non-restricted', 'restricted', 'special'].forEach(function (k) { if (o[k] && !f[k]) out.push(D.levelName(k)); });
         return out;
       },
       // Tab4
@@ -110,13 +110,13 @@
       /* -------- Tab1 职称权限对应 -------- */
       openPriv: function (row) {
         this.privTitle = row.title;
-        this.privForm = { unrestricted: !!row.unrestricted, restricted: !!row.restricted, special: !!row.special };
-        this.privOriginal = { unrestricted: !!row.unrestricted, restricted: !!row.restricted, special: !!row.special };
+        this.privForm = { 'non-restricted': !!row['non-restricted'], restricted: !!row.restricted, special: !!row.special };
+        this.privOriginal = { 'non-restricted': !!row['non-restricted'], restricted: !!row.restricted, special: !!row.special };
         this.showPriv = true;
       },
       savePriv: function () {
         var f = this.privForm, levels = [];
-        ['unrestricted', 'restricted', 'special'].forEach(function (k) { if (f[k]) levels.push(k); });
+        ['non-restricted', 'restricted', 'special'].forEach(function (k) { if (f[k]) levels.push(k); });
         Svc.saveTitlePrivilege(this.privTitle, levels);
         this.showPriv = false;
         App.bump();
@@ -216,7 +216,7 @@
                 <tbody>
                   <tr v-for="row in matrix">
                     <td>{{ D.titleName(row.title) }}</td>
-                    <td><span :style="{color: row.unrestricted ? '#16a34a' : '#9aa4b2'}">{{ row.unrestricted ? '✔' : '✘' }}</span></td>
+                    <td><span :style="{color: row['non-restricted'] ? '#16a34a' : '#9aa4b2'}">{{ row['non-restricted'] ? '✔' : '✘' }}</span></td>
                     <td><span :style="{color: row.restricted ? '#16a34a' : '#9aa4b2'}">{{ row.restricted ? '✔' : '✘' }}</span></td>
                     <td><span :style="{color: row.special ? '#16a34a' : '#9aa4b2'}">{{ row.special ? '✔' : '✘' }}</span></td>
                     <td class="actions"><a class="btn-link" @click="openPriv(row)">编辑</a></td>
@@ -431,7 +431,7 @@
       <ui-modal v-if="showPriv" :title="'编辑职称权限 - '+D.titleName(privTitle)" @close="showPriv=false">
         <div class="divider-label">处方权限范围</div>
         <div class="radios" style="gap:14px">
-          <label><input type="checkbox" v-model="privForm.unrestricted"> 非限制使用级　可开具</label>
+          <label><input type="checkbox" v-model="privForm['non-restricted']"> 非限制使用级　可开具</label>
           <label><input type="checkbox" v-model="privForm.restricted"> 限制使用级　可开具</label>
           <label><input type="checkbox" v-model="privForm.special"> 特殊使用级　可开具</label>
         </div>

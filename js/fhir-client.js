@@ -15,8 +15,13 @@
 
   function apiError(status, outcome) {
     var issues = (outcome && outcome.issue) || [];
-    var text = issues.map(function (i) { return (i.details && i.details.text) || i.diagnostic || ''; })
-      .filter(Boolean).join('; ') || ('HTTP ' + status);
+    // HAPI 的说明文字可能出现在 details.text 或 diagnostics（单复数容易看漏，
+    // 漏掉就只能看到 "HTTP 400"，服务端拒绝原因就查不出来了）
+    var text = issues.map(function (i) {
+      var t = (i.details && i.details.text) || i.diagnostics || i.diagnostic || '';
+      var expr = (i.expression || []).join(',');
+      return t + (expr ? ' @' + expr : '');
+    }).filter(Boolean).join('; ') || ('HTTP ' + status);
     text = text.replace(/&quot;/g, '"');
     var e = new Error(text);
     e.status = status;
@@ -51,10 +56,38 @@
     }).finally(function () { clearTimeout(timer); });
   }
 
+  /* CapabilityStatement → 支持性摘要。缺 rest 或缺类型都算不支持，
+   * 界面据此显示「服务端不支持」而不是假装写入成功（SRS §10.2）。 */
+  function summarizeSupport(md) {
+    var rest = (md && md.rest && md.rest[0]) || {};
+    var types = {};
+    (rest.resource || []).forEach(function (r) {
+      var inter = {};
+      (r.interaction || []).forEach(function (i) { inter[i.code] = true; });
+      var params = {};
+      (r.searchParam || []).forEach(function (p) { if (p.name) params[p.name] = true; });
+      types[r.type] = { interactions: inter, searchParams: params };
+    });
+    return {
+      fhirVersion: (md && md.fhirVersion) || '',
+      software: ((md && md.software) || {}).name || '',
+      system: (rest.interaction || []).map(function (i) { return i.code; }),
+      types: types,
+      has: function (type) { return !!types[type]; },
+      can: function (type, interaction) {
+        return !!(types[type] && types[type].interactions[interaction]);
+      },
+      canSearch: function (type, param) {
+        return !!(types[type] && types[type].searchParams[param]);
+      }
+    };
+  }
+
   var Client = {
     PAGE_SIZE: PAGE_SIZE,
 
-    /* 服务端能力：确认可达且为 FHIR R4 */
+    /* 服务端能力：确认可达且为 FHIR R4，并解析 SRS §10.2 要求的
+     * 「逐资源类型 / 逐 RESTful interaction」支持性清单。 */
     capabilities: function (base, opts) {
       return request('GET', base + '/metadata', undefined, opts).then(function (md) {
         var v = (md && md.fhirVersion) || '';
@@ -63,13 +96,23 @@
           e.versionMismatch = true;
           throw e;
         }
+        md.supported = summarizeSupport(md);
         return md;
       });
     },
 
+    /* 把 CapabilityStatement 压成 {types:{Task:{create:true,read:true,...}}, system:[...]} ；
+     * 服务端不支持的类型/交互要能在界面上显式显示，不得假装写入成功。 */
+    summarizeSupport: summarizeSupport,
+
     /* 按语义化 id 写入（新建或整体更新） */
     put: function (base, type, id, resource, opts) {
       return request('PUT', base + '/' + type + '/' + encodeURIComponent(id), resource, opts);
+    },
+
+    /* 事务 Bundle（SRS §10.5）：一次 POST 到服务根，entry 之间用 urn:uuid: 互相引用 */
+    transaction: function (base, bundle, opts) {
+      return request('POST', base, bundle, opts);
     },
 
     get: function (base, type, id, opts) {
@@ -108,6 +151,22 @@
       /* 不带 _sort：实测 HAPI 8.12 对 `_sort=_id` 会返回空结果集；
        * 预取本来就是按 id 归档进镜像，顺序无关紧要 */
       return step(base + '/' + type + '?_count=' + PAGE_SIZE);
+    },
+
+    /* 按 meta.tag 全量取回（清理脚本与「演示数据管理」页统计用） */
+    fetchAllByTag: function (base, type, system, code, opts) {
+      opts = opts || {};
+      var out = [];
+      var q = '_tag=' + encodeURIComponent(system + '|' + code) + '&_count=' + PAGE_SIZE;
+      function step(url) {
+        return request('GET', url, undefined, opts).then(function (b) {
+          (b && b.entry ? b.entry : []).forEach(function (e) { if (e.resource) out.push(e.resource); });
+          var next = ((b && b.link) || []).filter(function (l) { return l.relation === 'next'; })[0];
+          if (next && next.url) return step(next.url);
+          return out;
+        });
+      }
+      return step(base + '/' + type + '?' + q);
     },
 
     /* 单次搜索（供连通性测试展示数量） */

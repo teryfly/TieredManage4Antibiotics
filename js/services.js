@@ -7,31 +7,21 @@
   'use strict';
   var F = global.FHIR, D = global.Domain, R4 = global.FHIRR4;
 
-  function now() {
-    var d = new Date();
-    function p(n) { return String(n).padStart(2, '0'); }
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-  }
-  // 展示用 'YYYY-MM-DD HH:mm'；写入 FHIR 的 instant 元素必须用 ISO 形态，
-  // 否则服务端报 HAPI-1821 Invalid date/time format
-  function nowInstant() {
-    var d = new Date();
-    function p(n) { return String(n).padStart(2, '0'); }
-    // 带秒：分钟级时间戳会让同一分钟内的两条同内容审计记录被服务端判为重复而丢弃
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
-      + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-  }
+  /* 全系统时间一律取自演示时钟（js/clock.js）。SRS FR-008 的「24 小时内补审核」
+   * 与「超时」必须能被演示者推进时钟复现，因此这里不再直接 new Date()。
+   * 写入 FHIR 的 instant 元素用 ISO 形态，否则服务端报 HAPI-1821。
+   * 带秒：分钟级时间戳会让同一分钟内的两条同内容审计记录被服务端判为重复而丢弃。 */
+  function now() { return global.Clock.text(); }
+  function nowInstant() { return global.Clock.instant(); }
   function fmtInstant(s) { return (s || '').replace('T', ' ').slice(0, 16); }
 
-  /* 变更记录：changeType 同时落到 Provenance.activity（R4 对该元素的语义即
-   * 「发生的活动」），既比塞在扩展里规范，也让相邻两条记录内容不同。 */
-  function audit(changeType, content) {
-    return F.create({
-      resourceType: 'Provenance', recorded: nowInstant(),
-      activity: { coding: [{ code: 'amr-' + changeType, display: changeType }] },
-      ext: { changeType: changeType, content: content, operator: global.App.currentUser().display }
-    });
+  /* 变更记录：委托给 Approval.auditLog，同时形成 Provenance 与 AuditEvent
+   * （SRS §9.8 / BR-009：审批、发布、回退、授权变更均须形成可查询记录）。
+   * changeType 也落到 Provenance.activity，既比塞扩展规范，也让相邻两条内容不同。 */
+  function audit(changeType, content, targets) {
+    return global.Approval.auditLog(changeType, content, targets);
   }
+
   function genSqno() {
     var n = F.count('Task') + 1000;
     var d = new Date();
@@ -55,6 +45,11 @@
     return { reference: 'Patient/' + created.id, display: created.name[0].text };
   }
 
+  function practitionerOrg(practId) {
+    var info = global.Approval.practitionerInfo(practId);
+    return info ? info.orgId : '';
+  }
+
   var Svc = {
     now: now,
     nowInstant: nowInstant,
@@ -64,7 +59,13 @@
     medications: function (filter) {
       filter = filter || {};
       return F.search('Medication', function (m) {
-        if (filter.keyword && (m.code.text || '').indexOf(filter.keyword) < 0) return false;
+        // 关键词同时命中名称、通用名（商品名）与药品编码（SRS FR-004.2）
+        if (filter.keyword && ((m.code.text || '') + ' ' + (m.ext.brand || '') + ' ' + (m.ext.drugCode || '') + ' ' + m.id).indexOf(filter.keyword) < 0) return false;
+        if (filter.code && (m.ext.drugCode || m.id) !== filter.code) return false;
+        if (filter.status && filter.status !== 'all') {
+          var off = m.ext.enabled === false || m.status !== 'active';
+          if ((filter.status === 'disabled') !== off) return false;
+        }
         if (filter.drugClass && filter.drugClass !== 'all' && m.ext.drugClass.indexOf(filter.drugClass) < 0) return false;
         if (filter.level && filter.level !== 'all' && m.ext.level !== filter.level) return false;
         return true;
@@ -72,7 +73,7 @@
     },
     levelCounts: function () {
       var all = F.search('Medication');
-      var c = { all: all.length, unrestricted: 0, restricted: 0, special: 0 };
+      var c = { all: all.length, 'non-restricted': 0, restricted: 0, special: 0 };
       all.forEach(function (m) { c[m.ext.level]++; });
       return c;
     },
@@ -265,20 +266,27 @@
     },
 
     /* ============ 处方权限申请（Task）============ */
+    /* 处方权限申请页只看「单 Task 流程」那一批（rx-permission 业务）；
+     * 医师在 SRS 临床开单里发起的分级审批实例在「审批中心 / 我发起的」看。 */
     applicationsForDoctor: function (practitionerId) {
-      return F.search('Task', function (t) { return t.requester.reference === 'Practitioner/' + practitionerId; })
+      return F.search('Task', function (t) { return !t.ext.taskKind && t.requester.reference === 'Practitioner/' + practitionerId; })
         .sort(function (a, b) { return (b.authoredOn || '').localeCompare(a.authoredOn || ''); });
     },
     // 审批人可见：流转经过该角色节点的申请（待处理 + 已处理历史）
     applicationsForApprover: function (role) {
       return F.search('Task', function (t) {
+        if (t.ext.taskKind) return false;
         var flow = t.ext.flow || [];
         return flow.some(function (n) { return n.role === role; });
       }).sort(function (a, b) { return (b.authoredOn || '').localeCompare(a.authoredOn || ''); });
     },
     // 当前是否轮到该角色处理（流程节点处于 current 状态）
-    isMyTurn: function (t, role) {
-      return (t.ext.flow || []).some(function (n) { return n.role === role && n.status === 'current'; });
+    isMyTurn: function (t, role, practitionerId) {
+      return (t.ext.flow || []).some(function (n) {
+        if (n.status !== 'current') return false;
+        if (practitionerId && (n.assigneeIds || []).indexOf(practitionerId) >= 0) return true;
+        return !!role && n.role === role;
+      });
     },
     // 该角色历史审批的平均办理时长（小时，取节点变为 current 到审结的间隔）
     avgApprovalHours: function (role) {
@@ -299,32 +307,62 @@
       return Math.round(durations.reduce(function (a, b) { return a + b; }, 0) / durations.length * 10) / 10;
     },
     submitApplication: function (payload) {
-      var roles = payload.type === 'special' ? ['dept', 'pharmacy', 'expert'] : ['dept', 'pharmacy'];
-      var NODE = { dept: '科室负责人', pharmacy: '药学部门', expert: '审批专家' };
-      var flow = roles.map(function (r, i) { return { seq: i + 1, role: r, roleName: NODE[r], status: 'pending', approver: '', time: '' }; });
       var u = global.App.currentUser();
-      // 演示环境无「科室负责人」独立登录角色，该节点系统自动通过；药学部门（及特殊使用级下的审批专家）需人工审批
-      flow[0].status = 'approved'; flow[0].approver = '科室负责人'; flow[0].time = now();
-      flow[1].status = 'current';
-      var status = 'in-progress', businessStatus = '待药学部门审批';
+      var pd = global.Approval.currentVersion('rx-permission', payload.type);
+      var flow;
+      if (pd) {
+        // 与审批流程设计器共用同一份节点配置（SRS FR-015：发布即生效，无需重新登录）
+        flow = global.Approval.renumber((pd.ext.nodes || []).filter(function (n) { return n.type !== 'start' && n.type !== 'end'; }))
+          .map(function (n) {
+            var who = global.Approval.resolveAssignees(n, { orgId: (practitionerOrg(u.practitioner) || {}) });
+            return {
+              seq: n.seq, role: n.nodeCode || (n.assigneeType === 'role' ? n.assignees[0] : 'expert'),
+              roleName: n.name, mode: n.mode, assigneeType: n.assigneeType,
+              assigners: n.assignees || [], assigneeIds: who.map(function (a) { return a.id; }),
+              approver: '', time: '', status: 'pending', hours: n.deadlineHours, actions: n.actions || ['approve', 'reject']
+            };
+          });
+        if (!flow.length) throw new Error('流程版本没有可用节点');
+        flow[0].status = 'approved'; flow[0].approver = '系统自动匹配'; flow[0].time = now();
+        if (flow.length > 1) flow[1].status = 'current';
+      } else {
+        var roles = payload.type === 'special' ? ['dept', 'pharmacy', 'expert'] : ['dept', 'pharmacy'];
+        var NODE = { dept: '科室负责人', pharmacy: '药学部门', expert: '审批专家' };
+        flow = roles.map(function (r, i) { return { seq: i + 1, role: r, roleName: NODE[r], status: 'pending', approver: '', time: '', actions: ['approve', 'reject'] }; });
+        flow[0].status = 'approved'; flow[0].approver = '科室负责人'; flow[0].time = now();
+        flow[1].status = 'current';
+      }
+      var currentIdx = flow.map(function (n) { return n.status; }).indexOf('current');
+      var status = currentIdx < 0 ? 'completed' : 'in-progress';
+      var businessStatus = currentIdx < 0 ? '已通过' : '待' + flow[currentIdx].roleName + '审批';
       var t = F.create({
-        resourceType: 'Task', identifier: [{ value: genSqno() }], status: status, intent: 'order', authoredOn: nowInstant(),
+        resourceType: 'Task', identifier: [{ system: global.Approval.SYS.sqno, value: genSqno() }],
+        status: status, intent: 'order', authoredOn: nowInstant(),
         businessStatus: { text: businessStatus },
         for: patientFor(payload),
         requester: { reference: 'Practitioner/' + u.practitioner, display: u.name },
         ext: {
+          rxPermission: true, workflowVersion: pd ? pd.version : '', pdId: pd ? pd.id : '',
           type: payload.type, drug: payload.drug, dept: payload.dept, requesterTitle: u.title,
           useStart: payload.useStart, useEnd: payload.useEnd, reason: payload.reason,
           patientName: payload.patientName, mrn: payload.mrn, diagnosis: payload.diagnosis, infection: payload.infection,
           patientAge: payload.patientAge || null, patientGender: payload.patientGender || '', patientDept: payload.patientDept || '',
           attachments: payload.attachments || [],
-          flow: flow, decision: null
+          flow: flow, decision: currentIdx < 0 ? { result: 'approved', by: '系统', time: now(), reason: '' } : null
         }
       });
       F.create({ resourceType: 'Communication', status: 'completed', ext: { category: 'dynamic', time: now(), type: '提交', content: u.name + '-' + payload.drug + (payload.type === 'special' ? '特殊' : '限制') + '使用级申请已提交', target: 'doctor,expert,pharmacy' } });
-      F.create({ resourceType: 'Communication', status: 'completed', ext: { category: 'notification', time: now(), type: '审批待办', content: '新的' + D.levelName(payload.type) + '申请（' + payload.drug + '）待您审批', target: 'pharmacy', unread: true } });
+      if (currentIdx >= 0) {
+        F.create({ resourceType: 'Communication', status: 'completed', ext: { category: 'notification', time: now(), type: '审批待办', content: '新的' + D.levelName(payload.type) + '申请（' + payload.drug + '）待您审批', target: flow[currentIdx].role, unread: true } });
+      }
       return t;
     },
+    /* 处方权限申请流程当前用的版本（页面展示「本次申请走的是哪一版流程」） */
+    rxPermissionVersion: function (level) {
+      var pd = global.Approval.currentVersion('rx-permission', level);
+      return pd ? { id: pd.id, version: pd.version, title: pd.ext.title, nodes: (pd.ext.nodes || []).length } : null;
+    },
+
     // 通用审批推进：对当前处于 current 状态、且与操作人角色匹配的节点做出决定；
     // 通过则推进到下一节点（无下一节点则整单通过），驳回则整单驳回
     approveApplication: function (taskId, result, reason) {
@@ -506,7 +544,7 @@
         var dRecs = recs.filter(function (r) { return r.ext.dept === row.dept && r.ext.doctor === row.doctor; });
         return {
           doctor: row.doctor, title: row.title, dept: row.dept, total: row.rx,
-          unrestricted: dRecs.filter(function (r) { return r.ext.level === 'unrestricted'; }).length,
+          'non-restricted': dRecs.filter(function (r) { return r.ext.level === 'non-restricted'; }).length,
           restricted: dRecs.filter(function (r) { return r.ext.level === 'restricted'; }).length,
           special: dRecs.filter(function (r) { return r.ext.level === 'special'; }).length,
           submission: row.submission
@@ -525,10 +563,10 @@
         };
       }).sort(function (a, b) { return b.ddd - a.ddd; });
 
-      var levelDdd = { unrestricted: 0, restricted: 0, special: 0 };
+      var levelDdd = { 'non-restricted': 0, restricted: 0, special: 0 };
       recs.forEach(function (r) { levelDdd[r.ext.level] += r.ext.ddd; });
       var levelSplit = [
-        { label: '非限制使用级', value: pct(levelDdd.unrestricted, totalDdd), color: '#16a34a' },
+        { label: '非限制使用级', value: pct(levelDdd['non-restricted'], totalDdd), color: '#16a34a' },
         { label: '限制使用级', value: pct(levelDdd.restricted, totalDdd), color: '#d97706' },
         { label: '特殊使用级', value: pct(levelDdd.special, totalDdd), color: '#dc2626' }
       ];
@@ -616,6 +654,572 @@
       ];
     }
   };
+
+  /* =====================================================================
+   * SRS 侧服务（页面只调这一层，业务规则一律走 Approval 引擎）
+   * 编号与 SRS 第 4 节功能需求一一对应，便于验收对照。
+   * ===================================================================== */
+  var Ap = global.Approval;
+
+  var srs = {
+    /* ---------- FR-001 抗菌药物等级维护 ---------- */
+    grades: function () {
+      return D.LEVELS.map(function (lv) {
+        var rule = F.read('Basic', 'Basic-grade-' + lv.code);
+        var drugs = F.search('Medication', function (m) { return D.normalizeLevel(m.ext.level) === lv.code; });
+        return {
+          code: lv.code, name: lv.name, legacyName: lv.legacy || (lv.name + '级'), desc: lv.desc,
+          color: lv.color, rank: lv.rank,
+          enabled: !(rule && rule.ext.enabled === false),
+          definitionNote: (rule && rule.ext.note) || '',
+          updatedBy: (rule && rule.ext.updatedBy) || '', updatedAt: (rule && rule.ext.updatedAt) || '',
+          drugCount: drugs.length,
+          drugs: drugs.map(function (m) { return { id: m.id, name: m.code.text, code: m.ext.drugCode || m.id }; })
+        };
+      });
+    },
+    grade: function (code) { return srs.grades().filter(function (g) { return g.code === D.normalizeLevel(code); })[0] || null; },
+    saveGrade: function (code, patch, note) {
+      var id = 'Basic-grade-' + code;
+      var lv = D.level(code);
+      var cur = F.read('Basic', id);
+      var ext = Object.assign({
+        code: code, name: lv ? lv.name : code, desc: (lv ? lv.desc : ''),
+        enabled: true, note: '', updatedBy: global.App.currentUser().display, updatedAt: now()
+      }, (cur && cur.ext) || {}, patch || {});
+      var res;
+      if (cur) { cur.ext = ext; res = F.update(cur); }
+      else res = F.create({ resourceType: 'Basic', id: id, created: nowInstant(), code: { text: 'grade-' + code }, ext: ext });
+      audit('等级维护', '抗菌药物等级「' + ext.name + '」' + (patch && patch.enabled === false ? '已停用' : '已保存')
+        + (note ? '：' + note : ''), ['Basic/' + id]);
+      return res;
+    },
+    /* 新增自定义等级（SRS FR-001.1 支持新增等级分类） */
+    addGrade: function (data) {
+      var code = (data.code || '').trim() || ('grade-' + Date.now().toString(36));
+      var list = D.LEVELS.slice();
+      list.push({ code: code, name: data.name, legacy: data.name + '级', rank: Number(data.rank) || (list.length + 1),
+        color: data.color || '#7c3aed', desc: data.desc || '' });
+      D.LEVELS.length = 0; Array.prototype.push.apply(D.LEVELS, list);
+      F.create({ resourceType: 'Basic', id: 'Basic-grade-' + code, created: nowInstant(),
+        code: { text: 'grade-' + code },
+        ext: { code: code, name: data.name, desc: data.desc || '', enabled: true, note: data.note || '',
+          updatedBy: global.App.currentUser().display, updatedAt: now() } });
+      // 职称/映射规则同步补一条空规则，避免新等级没有 Permission-map 资源
+      if (!F.read('Permission', 'Permission-map-' + code)) {
+        F.create({ resourceType: 'Permission', id: 'Permission-map-' + code, status: 'active',
+          ext: { category: 'level-mapping', level: code, allowedTitles: [], approvals: [] } });
+      }
+      if (!F.read('Permission', 'Permission-gate-' + code)) {
+        F.create({ resourceType: 'Permission', id: 'Permission-gate-' + code, status: 'active',
+          ext: { category: 'gatekeeping', level: code, titleCheck: true, approvalCheck: [],
+            interceptOnTitleMismatch: 'block', interceptOnNotApproved: 'none' } });
+      }
+      audit('等级维护', '新增抗菌药物等级「' + data.name + '」（编码 ' + code + '）', ['Basic/Basic-grade-' + code]);
+      return code;
+    },
+    /* 停用/调整等级前的影响提示（FR-001.7、FR-004.5） */
+    gradeImpact: function (code) {
+      var drugs = F.search('Medication', function (m) { return D.normalizeLevel(m.ext.level) === code; });
+      var running = F.search('Task', function (t) {
+        return t.ext.taskKind === 'main' && t.ext.level === code
+          && ['approved', 'rejected', 'withdrawn', 'cancelled', 'post-review-done'].indexOf(t.ext.flowStatus) < 0;
+      });
+      return {
+        drugCount: drugs.length, drugs: drugs.map(function (m) { return m.code.text; }),
+        runningCount: running.length,
+        snapshotNote: '已创建的审批任务保留其开单时所使用的等级快照，不受本次调整影响（FR-001.7）',
+        flowNote: running.length ? '该等级下还有 ' + running.length + ' 件进行中的审批，停用等级不会中断它们'
+          : '该等级下没有进行中的审批'
+      };
+    },
+
+    /* ---------- FR-004 抗菌药物目录 ---------- */
+    searchDrugs: function (f) {
+      f = f || {};
+      var list = F.search('Medication', function (m) {
+        if (f.keyword && (m.code.text + ' ' + (m.ext.drugCode || '') + ' ' + (m.ext.brand || '')).indexOf(f.keyword) < 0) return false;
+        if (f.code && (m.ext.drugCode || m.id) !== f.code) return false;
+        if (f.level && f.level !== 'all' && D.normalizeLevel(m.ext.level) !== f.level) return false;
+        if (f.status && f.status !== 'all') {
+          var disabled = m.ext.enabled === false || m.status === 'entered-in-error' || m.status === 'inactive';
+          if ((f.status === 'disabled') !== disabled) return false;
+        }
+        return true;
+      });
+      return list.map(function (m) { return srs.drugRow(m); }).sort(function (a, b) { return a.name.localeCompare(b.name, 'zh'); });
+    },
+    drugRow: function (m) {
+      var mk = F.search('MedicationKnowledge', function (k) {
+        return (k.associatedMedication || []).some(function (a) { return Ap.idOf(a.reference) === m.id; });
+      })[0];
+      var grade = Ap.drugGrade(m);
+      return {
+        id: m.id, name: m.code.text, genericName: m.code.text,
+        drugCode: m.ext.drugCode || m.id, demoMark: m.ext.demoMark || '',
+        form: m.ext.doseFormCode || (mk && mk.ext && mk.ext.doseFormText) || '—',
+        spec: m.ext.spec || '—', brand: m.ext.brand || '—', manufacturer: m.ext.manufacturer || '—',
+        drugClass: m.ext.drugClass || (mk && mk.ext && mk.ext.amrClass) || '',
+        level: grade.level, levelName: D.levelName(grade.level), levelSource: grade.sourceLabel,
+        usage: m.ext.usage || '', insurance: m.ext.insurance || '', stock: m.ext.stock || '',
+        enabled: m.ext.enabled !== false && m.status === 'active',
+        knowledgeId: mk ? mk.id : '', overridden: !!m.ext.overridden,
+        pendingUpdate: !!m.ext.pendingUpdate,
+        indication: m.ext.indicationSummary || ''
+      };
+    },
+    drug: function (id) { var m = F.read('Medication', id); return m ? srs.drugRow(m) : null; },
+    /* 调整药品等级（FR-004.5：新单用新等级，旧申请保留快照） */
+    setDrugGrade: function (medId, level, note) {
+      var m = F.read('Medication', medId);
+      if (!m) throw new Error('药品不存在');
+      var before = D.normalizeLevel(m.ext.level);
+      m.ext.level = D.normalizeLevel(level);
+      var res = F.update(m);
+      var mk = F.read('MedicationKnowledge', m.ext.knowledgeId || '') ||
+        F.search('MedicationKnowledge', function (k) {
+          return (k.associatedMedication || []).some(function (a) { return Ap.idOf(a.reference) === m.id; });
+        })[0];
+      if (mk) { mk.ext.level = m.ext.level; mk.medicineClassification = mk.medicineClassification || []; 
+        mk.medicineClassification[0] = { type: { coding: [{ system: Ap.CANON + '/activity', code: 'atc', display: 'ATC 分类' }], text: 'ATC 分类' },
+          classification: { coding: [{ system: Ap.SYS.level, code: m.ext.level, display: D.levelName(m.ext.level) }] } };
+        F.update(mk); }
+      audit('等级调整', '药品「' + m.code.text + '」等级由「' + D.levelName(before) + '」调整为「' + D.levelName(level) + '」'
+        + (note ? '：' + note : ''), ['Medication/' + m.id]);
+      return { before: before, after: m.ext.level, medication: srs.drugRow(res) };
+    },
+    /* 某药品对某医师的权限规则视图（FR-004.3 选药看规则） */
+    drugPermissionView: function (medId, practitionerId) {
+      var m = F.read('Medication', medId);
+      var grade = Ap.drugGrade(m);
+      var map = F.read('Permission', 'Permission-map-' + grade.level);
+      var chk = practitionerId ? Ap.check({ practitioner: practitionerId, medicationId: medId }) : null;
+      return {
+        drug: srs.drugRow(m), grade: grade.level,
+        allowedTitles: (map && map.ext.allowedTitles) || [],
+        approvalNodes: ((map && map.ext.approvals) || []).map(function (r) { return D.approvalRoleName(r); }),
+        flow: Ap.currentVersion('tier-approval', grade.level),
+        check: chk
+      };
+    },
+
+    /* ---------- FR-002 按医生职称设置使用权限 ---------- */
+    titleRules: function () {
+      return D.TITLES.map(function (t) {
+        var matrix = Ap.titleRuleMatrix(t.code);
+        var levels = Object.keys(matrix).filter(function (k) { return matrix[k]; });
+        var log = srs.ruleChangeLog('职称权限', D.titleName(t.code));
+        return {
+          title: t.code, titleName: t.name, rank: t.rank,
+          levels: levels, matrix: matrix,
+          doctors: F.search('Practitioner', function (p) { return p.ext && p.ext.title === t.code; }).length,
+          updatedAt: log.length ? log[0].time : '', updatedBy: log.length ? log[0].operator : ''
+        };
+      });
+    },
+    /* 保存前展示变更摘要（FR-002.4） */
+    titleRuleDiff: function (title, levels) {
+      var cur = Ap.titleRuleMatrix(title);
+      return D.LEVELS.map(function (lv) {
+        var from = !!cur[lv.code], to = (levels || []).indexOf(lv.code) >= 0;
+        return from === to ? null : { level: lv.code, levelName: lv.name, from: from, to: to,
+          text: lv.name + (to ? ' 新增' : ' 取消') };
+      }).filter(Boolean);
+    },
+    saveTitleRule: function (title, levels, note) {
+      var diff = srs.titleRuleDiff(title, levels);
+      if (!diff.length) return { changed: [], text: '未发生变更' };
+      D.LEVELS.forEach(function (lv) {
+        var p = F.read('Permission', 'Permission-map-' + lv.code);
+        if (!p) return;
+        var arr = (p.ext.allowedTitles || []).slice();
+        var has = arr.indexOf(title) >= 0, want = (levels || []).indexOf(lv.code) >= 0;
+        if (want && !has) arr.push(title);
+        if (!want && has) arr.splice(arr.indexOf(title), 1);
+        p.ext.allowedTitles = arr;
+        F.update(p);
+        // 卡控规则的审批校验项随映射联动（沿用既有原型的联动语义）
+        var g = F.read('Permission', 'Permission-gate-' + lv.code);
+        if (g) { g.ext.approvalCheck = (p.ext.approvals || []).slice();
+          g.ext.interceptOnNotApproved = (p.ext.approvals || []).length ? g.ext.interceptOnNotApproved : 'none';
+          F.update(g); }
+      });
+      var text = diff.map(function (d) { return d.text; }).join('、');
+      audit('职称权限', D.titleName(title) + ' 可使用等级调整为：'
+        + (levels.length ? levels.map(D.levelName).join('、') : '无') + '（变更：' + text + '）'
+        + (note ? '；' + note : ''));
+      return { changed: diff, text: text };
+    },
+    ruleChangeLog: function (changeType, keyword) {
+      return F.search('Provenance', function (p) {
+        return (!changeType || p.ext.changeType === changeType)
+          && (!keyword || (p.ext.content || '').indexOf(keyword) >= 0);
+      }).map(function (p) {
+        return { id: p.id, time: R4.fromWire ? (p.recorded || '').replace('T', ' ').slice(0, 16) : p.recorded,
+          content: p.ext.content, operator: p.ext.operator, changeType: p.ext.changeType };
+      }).sort(function (a, b) { return b.time.localeCompare(a.time); });
+    },
+
+    /* ---------- FR-003 科室与个人权限维护 ---------- */
+    departments: function () {
+      return F.search('Organization', function (o) {
+        return o.ext && o.ext.orgKind === 'department';
+      }).map(function (o) {
+        var roles = F.search('PractitionerRole', function (r) {
+          return r.organization && r.organization.reference === 'Organization/' + o.id;
+        });
+        return {
+          id: o.id, name: o.name, kind: (o.type && o.type[0] && o.type[0].text) || '',
+          doctors: roles.length,
+          grant: (function () { var d = Ap.deptRule(o.id); return d ? { levels: d.ext.levels || [], note: d.ext.note, status: d.status } : null; })(),
+          approvable: roles.some(function (r) { return r.ext && r.ext.canApprove; })
+        };
+      }).sort(function (a, b) { return a.name.localeCompare(b.name, 'zh'); });
+    },
+    /* 按科室查看医生列表、职称与当前授权（FR-003.1） */
+    departmentDoctors: function (orgId) {
+      return F.search('PractitionerRole', function (r) {
+        return r.organization && r.organization.reference === 'Organization/' + orgId;
+      }).map(function (r) {
+        var pid = Ap.idOf(r.practitioner.reference);
+        var info = Ap.practitionerInfo(pid);
+        var authz = Ap.authorizations(pid);
+        return {
+          practitioner: pid, name: info.name, title: info.title, titleName: D.titleName(info.title),
+          roleTypes: (r.ext && r.ext.roles) || [r.ext.roleType], canApprove: !!(r.ext && r.ext.canApprove),
+          levels: authz.levels.map(function (c) { return D.levelName(c); }),
+          hitLayer: authz.hit.srcLabel, identities: D.identitiesOfPractitioner(pid).map(function (u) { return u.id; })
+        };
+      }).sort(function (a, b) { return D.titleRank(b.title) - D.titleRank(a.title); });
+    },
+    saveDeptGrant: function (orgId, levels, note) {
+      var id = 'Permission-dept-' + orgId;
+      var cur = F.read('Permission', id);
+      var o = F.read('Organization', orgId);
+      var before = cur ? (cur.ext.levels || []).map(D.levelName).join('、') : '（未配置）';
+      var ext = Object.assign({}, (cur && cur.ext) || {}, {
+        category: 'authorization', subjectType: 'department', level: '',
+        subjectRef: 'Organization/' + orgId, deptName: o ? o.name : orgId,
+        levels: (levels || []).map(D.normalizeLevel), grantLabel: '科室授权', note: note || '',
+        source: o ? o.name : orgId, before: before, after: (levels || []).map(D.levelName).join('、')
+      });
+      if (cur) { cur.ext = ext; cur.status = 'active'; F.update(cur); }
+      else F.create({ resourceType: 'Permission', id: id, status: 'active', ext: ext });
+      audit('科室授权', '科室「' + ext.deptName + '」授权等级调整为 ' + ext.after + '（原：' + before + '）'
+        + (note ? '；' + note : ''), ['Permission/' + id]);
+      return { before: before, after: ext.after };
+    },
+    savePersonGrant: function (practId, levels, grantLabel, expires, note) {
+      var id = 'Permission-person-' + practId;
+      var cur = F.read('Permission', id);
+      var info = Ap.practitionerInfo(practId);
+      var before = cur ? (cur.ext.levels || []).map(D.levelName).join('、') : '（未配置）';
+      var ext = Object.assign({}, (cur && cur.ext) || {}, {
+        category: 'authorization', subjectType: 'person', level: '',
+        subjectRef: 'Practitioner/' + practId, practitionerName: info.name,
+        levels: (levels || []).map(D.normalizeLevel), grantLabel: grantLabel || '个人授权',
+        expires: expires || '', note: note || '', source: info.name,
+        before: before, after: (levels || []).map(D.levelName).join('、')
+      });
+      if (cur) { cur.ext = ext; cur.status = levels && levels.length ? 'active' : 'inactive'; F.update(cur); }
+      else F.create({ resourceType: 'Permission', id: id, status: levels && levels.length ? 'active' : 'inactive', ext: ext });
+      audit('个人授权', '医师「' + info.name + '」个人授权调整为 ' + ext.after + '（原：' + before + '）'
+        + (ext.expires ? '；有效期至 ' + ext.expires : '') + (note ? '；' + note : ''), ['Permission/' + id]);
+      return { before: before, after: ext.after };
+    },
+    /* 医师权限详情：职称规则 / 科室授权 / 个人授权 / 最终可开等级（FR-003.4、FR-003.5） */
+    doctorDetail: function (practId) {
+      var authz = Ap.authorizations(practId);
+      if (!authz) return null;
+      var byLevel = {};
+      D.LEVELS.forEach(function (lv) {
+        byLevel[lv.code] = {
+          level: lv.code, levelName: lv.name,
+          allowed: authz.levels.indexOf(lv.code) >= 0,
+          drugCount: F.count('Medication', function (m) { return D.normalizeLevel(m.ext.level) === lv.code; })
+        };
+      });
+      return {
+        info: authz.practitioner, priority: authz.priority, priorityLabel: authz.priorityLabel,
+        layers: authz.layers, hit: authz.hit, levels: authz.levels,
+        levelNames: authz.levels.map(D.levelName), byLevel: byLevel,
+        missing: D.LEVELS.filter(function (lv) { return authz.levels.indexOf(lv.code) < 0; }).map(function (lv) { return lv.code; }),
+        missingNames: D.LEVELS.filter(function (lv) { return authz.levels.indexOf(lv.code) < 0; }).map(function (lv) { return lv.name; }),
+        roleGrants: (function () {
+          var r = Ap.practitionerRole(practId);
+          return r ? { id: r.id, org: r.ext.orgName, roles: r.ext.roles || [], canApprove: !!r.ext.canApprove } : null;
+        })(),
+        history: srs.ruleChangeLog(null, authz.practitioner.name).slice(0, 8)
+      };
+    },
+    doctorDirectory: function () {
+      return F.search('Practitioner').map(function (p) {
+        var info = Ap.practitionerInfo(p.id);
+        if (!info) return null;
+        var authz = Ap.authorizations(p.id);
+        return {
+          id: p.id, name: info.name, title: info.title, titleName: D.titleName(info.title),
+          dept: info.dept, roleTypes: (Ap.practitionerRole(p.id) || { ext: {} }).ext.roles || [info.roleType],
+          levels: authz ? authz.levels : [], hit: authz ? authz.hit.srcLabel : '',
+          identities: D.identitiesOfPractitioner(p.id).map(function (u) { return u.id; })
+        };
+      }).filter(Boolean).sort(function (a, b) { return a.dept.localeCompare(b.dept, 'zh') || D.titleRank(b.title) - D.titleRank(a.title); });
+    },
+    mergePriority: function () { return Ap.mergePriority(); },
+    setMergePriority: function (order) { return Ap.setMergePriority(order); },
+
+    /* ---------- FR-005~FR-010 临床开单 ---------- */
+    orderPatients: function () {
+      return F.search('Patient').map(function (p) {
+        return { id: p.id, name: (p.name[0] || {}).text, mrn: (p.ext || {}).mrn || '',
+          diagnosis: (p.ext || {}).diagnosis || '', infection: (p.ext || {}).infection || '' };
+      });
+    },
+    encounters: function (patientId) {
+      return F.search('Encounter', function (e) {
+        return !patientId || (e.subject && e.subject.reference === 'Patient/' + patientId);
+      }).map(function (e) {
+        return { id: e.id, kindName: e.ext.kindName || ((e.class || {}).text) || '', kind: e.ext.kind,
+          visitNo: e.ext.visitNo, bed: e.ext.bed || '', start: (e.period.start || '').replace('T', ' ').slice(0, 16),
+          status: e.status, chief: e.ext.chief || '', participant: e.participant && e.participant[0] ? e.participant[0].individual.display : '' };
+      });
+    },
+    purposes: function () {
+      var cs = F.read('CodeSystem', 'CodeSystem-amr-purpose');
+      var list = (cs && cs.ext && cs.ext.concepts) || null;
+      return D.PURPOSES.map(function (p) { return Object.assign({}, p); });
+    },
+    /* 提交：先做用药目的校验（BR-004），提交时二次权限判定（FR-005.7） */
+    submitOrder: function (payload) {
+      if (!payload.purposeCode) { var e = new Error('请先选择抗菌药物使用目的'); e.code = 'PURPOSE_REQUIRED'; throw e; }
+      var med = F.read('Medication', payload.medicationId);
+      if (!med) throw new Error('药品不存在');
+      var chk = Ap.check({ practitioner: payload.practitionerId, medicationId: med.id,
+        isEmergency: !!payload.emergency });
+      if (payload.expectedLevel && chk.grade !== payload.expectedLevel) {
+        throw new Error('药品等级已调整为「' + chk.gradeName + '」，请重新确认后再提交');
+      }
+      if (chk.allowed && !payload.emergency) {
+        var mr = Ap.createMedicationRequest({
+          medicationId: med.id, requesterPractId: payload.practitionerId, patientId: payload.patientId,
+          encounterId: payload.encounterId, patientName: payload.patientName, mrn: payload.mrn,
+          diagnosis: payload.diagnosis, purposeCode: payload.purposeCode, purposeNote: payload.purposeNote,
+          dosageText: payload.dosageText, frequency: payload.frequency, days: payload.days,
+          applicationReason: payload.reason, check: chk, orderStatus: 'ready-to-submit'
+        });
+        srs.notifyRequester(chk, mr, null, 'direct');
+        return { mode: 'direct', check: chk, medicationRequest: mr, instance: null };
+      }
+      if (payload.emergency) {
+        if (!payload.emergencyReason) { var e2 = new Error('紧急情况临时越级使用必须填写原因及临床说明'); e2.code = 'EMERGENCY_REASON'; throw e2; }
+        var r = Ap.createEmergency({
+          requesterPractId: payload.practitionerId, medicationId: med.id, patientId: payload.patientId,
+          encounterId: payload.encounterId, patientName: payload.patientName, mrn: payload.mrn,
+          diagnosis: payload.diagnosis, purposeCode: payload.purposeCode, purposeNote: payload.purposeNote,
+          dosageText: payload.dosageText, emergencyReason: payload.emergencyReason,
+          clinicalNote: payload.clinicalNote, applicationReason: payload.reason, check: chk
+        });
+        return { mode: 'emergency', check: chk, medicationRequest: r.mr, instance: r.mainTask,
+          deadline: r.mainTask.ext.postReviewDeadline };
+      }
+      if (!chk.route) { var e3 = new Error('该等级尚未发布审批流程，无法发起审批'); e3.code = 'NO_FLOW'; throw e3; }
+      var mr2 = Ap.createMedicationRequest({
+        medicationId: med.id, requesterPractId: payload.practitionerId, patientId: payload.patientId,
+        encounterId: payload.encounterId, patientName: payload.patientName, mrn: payload.mrn,
+        diagnosis: payload.diagnosis, purposeCode: payload.purposeCode, purposeNote: payload.purposeNote,
+        dosageText: payload.dosageText, frequency: payload.frequency, days: payload.days,
+        applicationReason: payload.reason, check: chk, orderStatus: 'pending-approval'
+      });
+      var inst = Ap.createInstance({ mr: mr2, purpose: 'tier-approval', requesterPractId: payload.practitionerId,
+        applicationReason: payload.reason, check: chk });
+      return { mode: 'approval', check: chk, medicationRequest: mr2, instance: inst,
+        flowTitle: inst.ext.pdTitle, version: inst.ext.version, nodes: inst.ext.flow };
+    },
+    notifyRequester: function (chk, mr, inst, mode) {
+      Ap.notify({ category: 'dynamic', type: '提交', targetRole: 'all',
+        content: '『' + mr.ext.drugName + '』（' + mr.ext.gradeSnapshot.name + '）权限符合，已直接提交（用药目的：'
+          + (mr.ext.purpose ? mr.ext.purpose.name : '—') + '）', linkRoute: 'order-demo', linkTask: mr.id });
+    },
+
+    /* ---------- FR-008 紧急越级补审核 ---------- */
+    emergencyRecords: function (practId) {
+      return Ap.mainTasks({ purpose: 'emergency-review' }).map(function (m) {
+        var t = Ap.timeoutState(m);
+        return {
+          id: m.id, sqno: m.ext.sqno, patient: m.ext.patientName, mrn: m.ext.mrn,
+          drug: m.ext.drug, level: m.ext.level, levelName: D.levelName(m.ext.level),
+          requester: m.ext.requesterName, createdAt: m.ext.createdAt,
+          reason: m.ext.emergencyReason, clinicalNote: m.ext.clinicalNote,
+          deadline: m.ext.postReviewDeadline, timeout: t,
+          flowStatus: m.ext.flowStatus, flowStatusName: D.flowStatusName(m.ext.flowStatus),
+          tone: D.flowStatus(m.ext.flowStatus).tone,
+          postReview: m.ext.postReview || null, submittedAt: m.ext.postReviewSubmittedAt || '',
+          materialsMissing: !m.ext.postReview,
+          orderStatus: m.ext.orderStatus, mine: Ap.idOf(m.requester.reference) === practId,
+          actionable: !!Ap.firstActionableNode(m.id, practId)
+        };
+      });
+    },
+    submitEmergencyMaterials: function (mainId, materials) { return Ap.submitPostReviewMaterials(mainId, materials); },
+
+    /* ---------- FR-016/020/021/022 审批中心 ---------- */
+    centerScopes: function () {
+      return [{ code: 'todo', name: '待我审批' }, { code: 'done', name: '我已审批' },
+      { code: 'mine', name: '我发起的' }, { code: 'emergency', name: '紧急越级待补审核' },
+      { code: 'all', name: '全部实例' }];
+    },
+    centerRows: function (practId, scope, filter) { return Ap.rows(practId, scope, filter); },
+    centerCounters: function (practId) { return Ap.countersFor(practId); },
+    centerDetail: function (mainId) {
+      var main = F.read('Task', mainId);
+      if (!main) return null;
+      var mr = F.read('MedicationRequest', main.ext.mrId);
+      var view = Ap.flowView(mainId);
+      var who = global.App.currentUser();
+      view.actions = {
+        canAct: !!Ap.firstActionableNode(mainId, who.practitioner),
+        node: (function () {
+          var n = Ap.firstActionableNode(mainId, who.practitioner);
+          return n ? { id: n.id, seq: n.ext.seq, name: n.ext.node.name, actions: n.ext.node.actions || [],
+            deadlineEnd: n.ext.deadlineEnd } : null;
+        })(),
+        canWithdraw: main.ext.flowStatus === 'waiting-node' && Ap.idOf(main.requester.reference) === who.practitioner,
+        canResubmitMaterials: main.ext.purpose === 'emergency-review' && !main.ext.postReview,
+        canRevise: main.ext.flowStatus === 'rejected' && Ap.idOf(main.requester.reference) === who.practitioner,
+        canResubmit: main.ext.flowStatus === 'returned' && Ap.idOf(main.requester.reference) === who.practitioner
+      };
+      view.request = {
+        sqno: main.ext.sqno, patient: main.ext.patientName, mrn: main.ext.mrn, diagnosis: main.ext.diagnosis,
+        encounter: mr && mr.encounter ? mr.encounter.reference : '',
+        drug: main.ext.drug, drugCode: main.ext.drugCode, level: main.ext.level,
+        levelName: D.levelName(main.ext.level), gradeSnapshot: main.ext.gradeSnapshot,
+        purpose: (mr && mr.ext.purpose) || null, reason: main.ext.applicationReason,
+        requester: main.ext.requesterName, requesterTitle: D.titleName(main.ext.requesterTitle),
+        dept: main.ext.dept, dosage: (mr && mr.ext.dosage) || {}, authoredAt: main.ext.createdAt,
+        authzHit: main.ext.authzHit, emergency: !!main.ext.emergency, emergencyReason: main.ext.emergencyReason,
+        orderStatus: main.ext.orderStatus, orderStatusName: D.orderStatusName(main.ext.orderStatus),
+        mrId: main.ext.mrId
+      };
+      return view;
+    },
+    act: function (params) { return Ap.act(params); },
+    withdraw: function (id, reason) { return Ap.withdraw(id, reason); },
+    resubmitMaterials: function (id, note) { return Ap.resubmit(id, note); },
+    reviseAndResubmit: function (id, patch) { return Ap.resubmitAfterReject(id, patch); },
+
+    /* ---------- FR-023 消息与提醒 ---------- */
+    messages: function (identity) {
+      var role = identity.role, pract = identity.practitioner;
+      return F.search('Communication', function (c) {
+        if (c.ext.category !== 'notification') return false;
+        return c.ext.targetPract === pract || (c.ext.target || '').indexOf(role) >= 0 || c.ext.target === 'all';
+      }).sort(function (a, b) { return (b.ext.time || '').localeCompare(a.ext.time || ''); });
+    },
+    unreadCount: function (identity) {
+      return srs.messages(identity).filter(function (n) { return n.ext.unread; }).length;
+    },
+    markAllRead: function (identity) {
+      srs.messages(identity).forEach(function (n) {
+        var r = F.read('Communication', n.id); r.ext.unread = false; F.update(r);
+      });
+    },
+    markRead: function (id) { var r = F.read('Communication', id); if (r) { r.ext.unread = false; return F.update(r); } },
+    jump: function (comm) {
+      return { route: comm.ext.linkRoute || 'approval-center', task: comm.ext.linkTask || '' };
+    },
+
+    /* ---------- 工作台（SRS §6.2） ---------- */
+    workbench: function (identity) {
+      var pract = identity.practitioner;
+      var counters = Ap.countersFor(pract);
+      var special = Ap.rows(pract, 'todo').filter(function (r) { return r.level === 'special'; });
+      var emergency = srs.emergencyRecords(pract).filter(function (e) { return e.timeout.timeout || e.timeout.kind === 'near'; });
+      var mine = Ap.rows(pract, 'mine').slice(0, 6);
+      return {
+        counters: counters, specialWaiting: special, emergencyDue: emergency,
+        mine: mine, todo: Ap.rows(pract, 'todo').slice(0, 8),
+        flowChanges: srs.ruleChangeLog(null, null).filter(function (p) {
+          return ['流程发布', '流程回退', '等级维护', '职称权限', '科室授权', '个人授权', '授权优先级'].indexOf(p.changeType) >= 0;
+        }).slice(0, 6),
+        authz: Ap.authorizations(pract)
+      };
+    },
+
+    /* ---------- 演示数据管理（DEMO-01 / SRS §10.2） ---------- */
+    capabilities: function (force) { return FHIR.capabilities(force); },
+    serverStatus: function (types) { return FHIR.serverCounts(types); },
+    refresh: function (types) { return global.App.refreshFromServer(types); },
+    /* 注意：必须拷贝一份再返回。Clock.state() 返回的是时钟模块自己的缓存对象，
+     * 直接 Object.assign 到它上面会把 FHIR 的读写模式写成 clock.mode，
+     * 「冻结演示时钟」会在任意页面渲染后被 local 覆盖而失效。 */
+    clock: function () {
+      var st = global.Clock.state();
+      return {
+        mode: st.mode, offsetMinutes: st.offsetMinutes, frozenAt: st.frozenAt,
+        setBy: st.setBy, setAt: st.setAt,
+        now: global.Clock.text(), instant: global.Clock.instant(), scope: R4.scopeCode(),
+        base: global.AmrConfig.all().fhirBase,
+        syncMode: FHIR.stats().mode, server: FHIR.stats().server
+      };
+    },
+    setClock: function (patch) {
+      var c = global.Clock;
+      if (patch.mode === 'live') return c.reset();
+      if (patch.mode === 'frozen') return c.freezeAt(patch.frozenAt);
+      return c.setOffset(patch.offsetMinutes);
+    },
+    advanceClock: function (minutes) { return global.Clock.advance(minutes); },
+    demoConfig: function () {
+      var cfg = global.AmrConfig.all();
+      return { base: cfg.fhirBase, mode: cfg.mode, scope: cfg.demoScope, autoSeed: cfg.autoSeed,
+        persistUsageRecords: cfg.persistUsageRecords, anchor: 'Basic/Basic-catalog-version',
+        scriptHint: 'python3 scripts/demo_data.py reset --scope ' + cfg.demoScope };
+    },
+    /* DEMO-15：患者 → 就诊 → 开单 → 审批任务 → 流程版本 → 留痕 的关联核查 */
+    trace: function (patientId) {
+      var p = patientId ? F.read('Patient', patientId) : null;
+      var encs = p ? F.search('Encounter', function (e) { return e.subject.reference === 'Patient/' + p.id; }) : [];
+      var mrs = p ? F.search('MedicationRequest', function (m) { return m.subject.reference === 'Patient/' + p.id; }) : [];
+      var tasks = mrs.map(function (m) {
+        return F.search('Task', function (t) { return t.ext && t.ext.taskKind === 'main' && t.ext.mrId === m.id; });
+      }).reduce(function (a, b) { return a.concat(b); }, []);
+      var pdIds = {}; tasks.forEach(function (t) { pdIds[t.ext.pdId] = true; });
+      var pds = Object.keys(pdIds).map(function (id) { return F.read('PlanDefinition', id); }).filter(Boolean);
+      var related = [];
+      tasks.forEach(function (t) { related.push('Task/' + t.id); related.push('Task/' + Ap.nodeTaskId(t.id, 1)); });
+      mrs.forEach(function (m) { related.push('MedicationRequest/' + m.id); });
+      var prov = F.search('Provenance', function (pr) {
+        var list = (pr.ext && pr.ext.targetList) || [];
+        return list.some(function (x) { return related.indexOf(x) >= 0; });
+      });
+      return {
+        patient: p ? { id: p.id, name: (p.name[0] || {}).text, mrn: p.ext.mrn, diagnosis: p.ext.diagnosis } : null,
+        encounters: encs.map(function (e) { return { id: e.id, kind: e.ext.kindName, visitNo: e.ext.visitNo, start: e.period.start }; }),
+        orders: mrs.map(function (m) {
+          return { id: m.id, no: m.ext.orderNo, drug: m.ext.drugName, grade: m.ext.gradeSnapshot,
+            purpose: m.ext.purpose, status: m.ext.orderStatus, emergency: !!m.ext.emergency,
+            authzHit: m.ext.authzHit, authoredOn: (m.authoredOn || '').replace('T', ' ').slice(0, 16) };
+        }),
+        tasks: tasks.map(function (t) {
+          return { id: t.id, sqno: t.ext.sqno, statusName: D.flowStatusName(t.ext.flowStatus),
+            purpose: t.ext.purpose, version: 'V' + t.ext.version, pdId: t.ext.pdId,
+            nodes: Ap.nodeTasksOf(t.id).length, canonical: t.instantiatesCanonical };
+        }),
+        flows: pds.map(function (pd) { return { id: pd.id, version: pd.version, status: pd.status, title: pd.ext.title }; }),
+        provenance: prov.map(function (pr) { return { time: (pr.recorded || '').replace('T', ' ').slice(0, 16), type: pr.ext.changeType, content: pr.ext.content, operator: pr.ext.operator }; }),
+        auditEvents: F.search('AuditEvent', function (ae) {
+          return (ae.entity || []).some(function (en) { return related.indexOf((en.what || {}).reference) >= 0; });
+        }).map(function (ae) { return { time: (ae.recorded || '').replace('T', ' ').slice(0, 16), type: (ae.subtype || [{}])[0].code, content: ae.ext.content, operator: ae.ext.operator }; }),
+        unlinked: mrs.filter(function (m) { return !tasks.some(function (t) { return t.ext.mrId === m.id; }) && m.ext.orderStatus !== 'ready-to-submit'; }).map(function (m) { return m.ext.orderNo; })
+      };
+    },
+    dataset: function () {
+      var counts = {};
+      FHIR.types().forEach(function (t) { counts[t] = FHIR.count(t); });
+      return { counts: counts, total: Object.keys(counts).reduce(function (s, k) { return s + counts[k]; }, 0) };
+    }
+  };
+  Svc.srs = srs;
 
   global.Svc = Svc;
 })(window);

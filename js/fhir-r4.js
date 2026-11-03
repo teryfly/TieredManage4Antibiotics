@@ -39,19 +39,34 @@
 
   var MARK = 'https://fhir.amr-demo.example/StructureDefinition/amr-';
   var ID_SYSTEM = 'https://fhir.amr-demo.example/id';
+  // 演示数据作用域：服务端写入的每条资源都带上这个 tag，Python 清理脚本据此
+  // 「只删本系统自己写的数据」。公共演示服务器是共享的，绝不做类型级全量清空。
+  var SCOPE_SYSTEM = 'https://fhir.amr-demo.example/demo-scope';
   var TYPE_CODE = MARK + 'source-resource-type';       // meta.tag：还原内部类型用
   var SRC = MARK + 'source-element-';                  // 被搬走的原始元素
   var BIZ = MARK + 'business-status-';                 // 业务状态词表
 
-  // 各类型的日期型元素（FHIR instant/dateTime），写入前规范为 ISO
+  function scopeCode() {
+    return (global.AmrConfig && global.AmrConfig.get && global.AmrConfig.get('demoScope')) || 'kjywfj-demo';
+  }
+
+  // 各类型的日期型元素（FHIR instant/dateTime），写入前规范为 ISO。
+  // 支持点分路径：紧急补审核的 24 小时截止时间就埋在 Task.restriction.period.end，
+  // 只处理顶层元素会漏掉它，服务端随即报 HAPI-1821 整单拒收。
   var DATE_ELEMENTS = {
-    Task: ['authoredOn', 'lastModified'],
+    Task: ['authoredOn', 'lastModified', 'restriction.period.start', 'restriction.period.end', 'due', 'expiration'],
     Provenance: ['recorded'],
     Observation: ['effective', 'issued'],
     DetectedIssue: ['identified'],
     Communication: ['sent'],
+    CommunicationRequest: ['requestedOn', 'occurrenceDateTime'],
     Basic: ['created'],
-    MedicationAdministration: ['recorded']
+    MedicationAdministration: ['recorded'],
+    MedicationRequest: ['authoredOn'],
+    Encounter: ['period.start', 'period.end', 'date'],
+    PractitionerRole: ['period.start', 'period.end'],
+    PlanDefinition: ['date'],
+    AuditEvent: ['recorded', 'occurred']
   };
 
   // Basic 自身拥有的元素；内部类型多出这些的元素在降级时搬进扩展
@@ -61,7 +76,10 @@
 
   // 引用完整性校验时可信的目标类型（这些类型由本系统自己维护）
   var REF_TARGET_TYPES = ['Patient', 'Practitioner', 'Organization', 'Medication', 'Task',
-    'Basic', 'Encounter', 'Provenance', 'Communication'];
+    'Basic', 'Encounter', 'Provenance', 'Communication', 'PractitionerRole',
+    'MedicationRequest', 'MedicationKnowledge', 'CommunicationRequest'];
+  // PlanDefinition 故意外：流程定义里的节点用「id 字符串」而非 Reference 表达，
+  // 加进白名单会让发布中的版本引用被悬空丢弃器静默删掉。
 
   function deepClone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }
 
@@ -72,8 +90,20 @@
     return m ? m[1] + 'T' + m[2] + (m[3] || ':00') : s;
   }
 
-  function extEntry(url, v, valueKey) {
-    var e = { url: url };
+  /* 按点分路径就地规范化日期，如 restriction.period.end。
+   * 中间节点缺失时静默跳过（这些元素在 FHIR 里都是可选的）。 */
+  function setIfDate(root, path) {
+    var parts = path.split('.'), node = root;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (!node || typeof node !== 'object') return;
+      node = node[parts[i]];
+    }
+    if (!node || typeof node !== 'object') return;
+    var last = parts[parts.length - 1];
+    if (typeof node[last] === 'string') node[last] = toInstant(node[last]);
+  }
+
+  function extEntry(url, v, valueKey) {    var e = { url: url };
     var key = valueKey || (typeof v === 'boolean' ? 'valueBoolean'
       : typeof v === 'number' ? (Number.isInteger(v) ? 'valueInteger' : 'valueDecimal')
       : 'valueString');
@@ -155,11 +185,11 @@
 
     /* 4) 悬空引用处理（引用目标必须已在服务端存在） */
     if (ctx && ctx.exists) dropDanglingRefs(r, ctx);
+    /* 5) 引用指向 R5 专有类型时改写到降级后的类型上 */
+    downgradeRefTargets(r);
 
-    /* 3) 日期规范 */
-    (DATE_ELEMENTS[internalType] || []).forEach(function (el) {
-      if (typeof r[el] === 'string') r[el] = toInstant(r[el]);
-    });
+    /* 3) 日期规范（点分路径逐项就地转换） */
+    (DATE_ELEMENTS[internalType] || []).forEach(function (path) { setIfDate(r, path); });
 
     /* 友好 id 的两种落点：
        - meta.tag：所有类型都可写、可按 _tag=system|code 检索（实测各类型均支持），
@@ -178,20 +208,71 @@
         }
       }
     }
+    // 演示作用域标签：与 ID_SYSTEM 一样写入 meta.tag，供清理脚本按 _tag 精确检索
+    var scope = scopeCode();
+    r.meta.tag = r.meta.tag.filter(function (c) { return c.system !== SCOPE_SYSTEM; });
+    r.meta.tag.push({ system: SCOPE_SYSTEM, code: scope, display: '演示数据作用域 ' + scope });
     return r;
   }
 
   function dropDanglingRefs(node, ctx) {
     if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach(function (n) { dropDanglingRefs(n, ctx); }); return; }
+    if (Array.isArray(node)) {
+      node.forEach(function (n) { dropDanglingRefs(n, ctx); });
+      // 引用被删光后留下的空壳元素没有意义（AuditEvent.entity[{}]),一并剔除
+      for (var i = node.length - 1; i >= 0; i--) {
+        var it = node[i];
+        if (it && typeof it === 'object' && !Array.isArray(it) && !Object.keys(it).length) node.splice(i, 1);
+      }
+      return;
+    }
     Object.keys(node).forEach(function (k) {
       var v = node[k];
       if (v && typeof v === 'object' && typeof v.reference === 'string') {
         var m = /^([A-Za-z]+)\/([^/]+)$/.exec(v.reference);
-        if (m && REF_TARGET_TYPES.indexOf(m[1]) >= 0 && !ctx.exists(m[1], m[2])) delete node[k];
+        // 降级类型（Permission 等）也照样检查：镜像里没有就说明这条引用根本不会被写出，
+        // 留在报文里只会被服务端判成悬空引用整条拒收。
+        if (m && (REF_TARGET_TYPES.indexOf(m[1]) >= 0 || TO_R4[m[1]]) && !ctx.exists(m[1], m[2])) delete node[k];
         return;
       }
       dropDanglingRefs(v, ctx);
+    });
+  }
+
+  /* R5 专有类型（Permission / Citation / ClinicalUseDefinition）在 R4 服务端不是合法的
+     引用目标，指向它们的 reference 必须改写为降级后的类型（实测 HAPI-0506 会整条拒收），
+     原类型记在 Reference.type 上，fromWire 时还原。 */
+  function downgradeRefTargets(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(function (n) { downgradeRefTargets(n); }); return; }
+    Object.keys(node).forEach(function (k) {
+      var v = node[k];
+      if (v && typeof v === 'object' && typeof v.reference === 'string') {
+        var m = /^([A-Za-z]+)\/(.+)$/.exec(v.reference);
+        if (m && TO_R4[m[1]]) {
+          if (!v.type) v.type = m[1];
+          v.reference = TO_R4[m[1]] + '/' + m[2];
+        }
+        return;
+      }
+      downgradeRefTargets(v);
+    });
+  }
+
+  /* 读回时把改写过目标类型的引用还原成内部类型，保持本地镜像与写入前一致 */
+  function restoreRefTargets(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(function (n) { restoreRefTargets(n); }); return; }
+    Object.keys(node).forEach(function (k) {
+      var v = node[k];
+      if (v && typeof v === 'object' && typeof v.reference === 'string') {
+        var wire = TO_R4[v.type];
+        if (wire && v.reference.indexOf(wire + '/') === 0) {
+          v.reference = v.type + '/' + v.reference.slice(wire.length + 1);
+        }
+        return;
+      }
+      restoreRefTargets(v);
     });
   }
 
@@ -222,6 +303,7 @@
       var bs = (r.extension || []).filter(function (e) { return e.url === BIZ + biz.extKey; })[0];
       if (bs) r.status = extValue(bs);
     }
+    restoreRefTargets(r);
     return r;
   }
 
@@ -238,6 +320,7 @@
   global.FHIRR4 = {
     ID_SYSTEM: ID_SYSTEM, TYPE_CODE: TYPE_CODE, TO_R4: TO_R4, BASIC_CLASS: BASIC_CLASS,
     BIZ_STATUS: BIZ_STATUS, NO_IDENTIFIER: NO_IDENTIFIER,
+    SCOPE_SYSTEM: SCOPE_SYSTEM, scopeCode: scopeCode,
     toInstant: toInstant, toWire: toWire, fromWire: fromWire, wireIdOf: wireIdOf
   };
 })(window);

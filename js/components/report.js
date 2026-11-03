@@ -144,7 +144,7 @@
             <div class="field" v-if="tab==='drugUse'"><label>分级级别</label>
               <select v-model="filter.level">
                 <option value="all">全部</option>
-                <option value="unrestricted">非限制使用级</option>
+                <option value="non-restricted">非限制使用级</option>
                 <option value="restricted">限制使用级</option>
                 <option value="special">特殊使用级</option>
               </select>
@@ -226,7 +226,7 @@
                 <td>{{ titleName(r.title) }}</td>
                 <td>{{ r.dept }}</td>
                 <td>{{ r.total }}</td>
-                <td>{{ r.unrestricted }}</td>
+                <td>{{ r['non-restricted'] }}</td>
                 <td>{{ r.restricted }}</td>
                 <td>{{ r.special }}</td>
                 <td>{{ r.submission }}</td>

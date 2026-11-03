@@ -18,6 +18,7 @@
     mode: 'remote',          // remote=读写穿透到 FHIR 服务端 | local=纯内存演示（等价 main 分支）
     autoSeed: true,          // 服务端无本系统数据时，自动写入初始基础数据
     persistUsageRecords: false, // 4870 条用药记录是否落服务端；公共演示服务器上建议关闭
+    demoScope: 'kjywfj-demo-v2', // 演示数据作用域：写入服务端每条资源的 meta.tag，清理脚本据此精确删除
     requestTimeoutMs: 20000
   };
 
@@ -43,6 +44,8 @@
     var out = {};
     if (qs.get('fhir')) out.fhirBase = normalizeBaseUrl(qs.get('fhir'));
     if (qs.get('mode')) out.mode = qs.get('mode') === 'local' ? 'local' : 'remote';
+    if (qs.get('scope')) out.demoScope = String(qs.get('scope')).replace(/[^\w.-]/g, '');
+    if (qs.get('autoSeed')) out.autoSeed = qs.get('autoSeed') !== '0' && qs.get('autoSeed') !== 'false';
     return out;
   }
 
@@ -99,6 +102,7 @@
       if ('mode' in patch) next.mode = patch.mode === 'local' ? 'local' : 'remote';
       if ('persistUsageRecords' in patch) next.persistUsageRecords = !!patch.persistUsageRecords;
       if ('autoSeed' in patch) next.autoSeed = !!patch.autoSeed;
+      if ('demoScope' in patch) next.demoScope = String(patch.demoScope || '').replace(/[^\w.-]/g, '') || DEFAULTS.demoScope;
       persist(next);
       Object.assign(state, next);
       return Promise.resolve(state);

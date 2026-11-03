@@ -1,211 +1,189 @@
-# 抗菌药物分级管理制度闭环管理系统 · 仿真原型
+# 抗菌药物分级管理系统 · 前端演示程序
 
-依据 `ux-design.docx` 的用户故事、用户旅程、信息架构图与低保真线框图实现的**可演示前端原型**。
-全部数据基于 **FHIR 标准资源**在浏览器内存（缓存）中模拟 **增删改查（CRUD）**，并预置了一套**符合业务逻辑的初始化基础数据**。面向客户演示时，可通过顶部的**演示角色切换**一键切换 5 种角色，走通全部业务流程。
+零构建 Vue 3 前端（全局脚本 + 本地 `lib/vue.global.prod.js`），数据全部以 **HL7 FHIR R4**
+资源表达，读写真实 FHIR 服务端（默认 SRS 指定的 `https://hapi.fhir.org/baseR4`）。
 
-## 一、如何运行
+功能范围 = `抗菌药物分级管理系统前端程序_SRS.md`（23 条功能需求、15 个演示用例）**∪** 原
+`UX-BA-design-KJYWFJ.md` 原型（目录/权限映射/适应症/监测分析/卡控/系统参数/处方权限申请）；
+两者冲突处一律以 SRS 为准（见 [冲突裁定](#二与既有原型的冲突裁定)）。
 
-本分支（`r4-fhir-backend`）在本原型基础上接入了真实 **FHIR R4** 服务端，见
-[第九节](#九r4-fhir-backend-分支接入真实-fhir-r4-服务端)。服务端不可达或切到
-`mode=local` 时，仍与 main 分支一致：纯静态前端、**无需构建、无需联网**（Vue 已本地化在 `lib/`）。
-
-方式 A（推荐，避免浏览器对本地文件的限制）：
+## 一、快速开始
 
 ```bash
 cd KJYWFJ
-python3 -m http.server 8137
-# 浏览器打开 http://localhost:8137
+npm start                     # python3 -m http.server 8137 → 打开 http://localhost:8137
 ```
 
-方式 B：直接用浏览器打开 `index.html` 亦可（已全部使用经典脚本，无 ES Module 跨域限制）。
+服务端地址按优先级解析：URL 参数 `?fhir=…&mode=…&scope=…` ＞ 顶部「🔌 已连接 FHIR」设置
+（localStorage）＞ `fhir-config.json` ＞ 内置默认 `https://hapi.fhir.org/baseR4`。
+`mode=local` 时是纯内存演示，不发任何请求；服务端不可达可一键「以本地演示模式继续」，不会白屏。
 
-## 二、演示角色切换
+推荐用本地 HAPI 做演示（公共实例是共享的、无鉴权、会被别人读写或定期清库）：
 
-页面顶部黄色条「🎭 演示角色切换」可在以下角色间即时切换，导航、首页内容、页面可见性、操作权限随之变化：
+```bash
+npm run fhir:up                                        # docker 起 HAPI，端口 8081，R4
+python3 scripts/init_demo_data.py --base http://localhost:8081/fhir --yes
+npm start                                              # 打开 http://localhost:8137?fhir=http://localhost:8081/fhir
+```
 
-| 角色 | 可见模块 | 演示要点 |
+## 二、演示数据初始化和清理脚本
+
+**单一数据源**：演示数据只定义在 `js/seed.js`。`scripts/export_seed.js` 在 Node 里装载前端
+数据层、跑一遍种子与审批引擎，导出「与浏览器写穿字节一致」的线上形态资源包；Python 脚本只负责
+上传与清理，不重抄任何业务数据。
+
+```bash
+npm run seed:export                    # → build/seed-bundle.json（当前 393 条）
+npm run demo:init                      # 初始化导入（默认公共 baseR4）
+npm run demo:status                    # 服务端上本系统数据概况 + CapabilityStatement 支持性
+npm run demo:clean                     # 清理本系统写入的数据
+npm run demo:reset                     # 清理 + 重新导入（演示前一键复位）
+
+python3 scripts/init_demo_data.py --base <URL> --scope <作用域> [--only Task] [--dry-run]
+python3 scripts/clean_demo_data.py --base <URL> --scope <作用域> [--dry-run] [--yes]
+```
+
+脚本要点：
+
+- **只认自己的数据**。共享实例上人人都在写 `Patient`/`Task`，因此前端读、写、清理都以
+  `meta.tag[https://fhir.amr-demo.example/demo-scope=<scope>]` 为准：「服务端是否已初始化」用带
+  本作用域标签的锚点资源判定，`_tag` 索引滞后时的按 id 兜底读回也会逐条核对标签，别的 scope 的
+  同名资源不会进本地镜像、也不会被删除。
+- **只删自己写的数据**。清理按该标签检索后逆引用顺序删除；`--scope` 不给就拒绝执行，
+  **不存在类型级全量清空**。为解除服务端引用保护而额外删除的资源，会先用 `meta.tag[…/id]` 确认归属本系统。
+- 写入按引用依赖顺序（Patient → Encounter → MedicationRequest → Task → Communication →
+  Provenance/AuditEvent），用事务 Bundle 批量提交，单条失败自动回退逐条 `PUT` 并打印 HAPI 错误码。
+- HAPI 的搜索索引有秒级滞后，`_tag` 检索可能读不全；清理脚本会再用种子包里的语义化 id 逐个
+  `GET` 补一遍，避免公共服务器上留下删不掉的尾巴。
+- 目标是公共演示服务器时会二次确认并提示其无鉴权、数据公开。
+
+`fhir-config.json` 的 `demoScope`（默认 `kjywfj-demo-v2`）就是部署的作用域标识，改成别的值即可
+在同一台服务端上隔离多套演示。注意本系统使用固定语义化 id，同一台服务端上换 scope 重灌会改写
+已有资源的标签，脚本会检测并提示，建议先清理旧 scope。
+
+## 三、推荐演示主线（对应 SRS 第 7/8 节 DEMO-01 ~ DEMO-15）
+
+顶部演示条可切换 **7 个角色 / 12 个演示身份**（SRS §11.2 要求权限满足与权限不足的医师、
+按人员/科室/角色的审批人、流程管理员必须是不同账号）。右侧「🔄 刷新数据」重新查询服务端，
+「📱 移动端审批」新开窗口看同一条 FHIR Task。
+
+| 步骤 | 身份 | 操作 |
 |---|---|---|
-| 系统管理员 | 目录综合管理、系统管理 | 目录维护、权限映射、卡控规则、审批流程、系统参数 |
-| 药学部门 | 目录综合管理、监测分析 | 目录/适应症维护（不可删除药品）、监测（无预警/手术监测）|
-| 医师 | 处方权限管理 | 提交限制/特殊使用级处方权申请 |
-| 审批专家 | 处方权限管理 | 审批特殊使用级申请（通过/驳回）|
-| 医疗质量管理部门 | 监测分析 | 监测概览、统计报表 |
+| DEMO-01 | 系统管理员 | 「演示数据管理」→ CapabilityStatement 支持性、DEMO-01 一键核对、演示时钟、数据关联核查 |
+| DEMO-02 | 规则管理员 | 「抗菌药物等级规则」→ 三级等级维护 + 药品等级调整（带快照影响提示） |
+| DEMO-03 | 规则管理员 | 同页「职称使用权限」→ 勾选矩阵，先出变更摘要再保存，可「用某医师验证」 |
+| DEMO-04 | 规则管理员 | 「医师权限管理」→ 科室授权、个人授权（含到期）、合并优先级可调 |
+| DEMO-05 | 医师·张建华 | 「临床开单演示」→ 权限符合 → 选用药目的 → 直接提交，生成演示 MedicationRequest |
+| DEMO-06 | 医师·王伟 | 选特殊使用级药品 → 自动弹权限不足提示（药品/等级/医师/授权/原因/缺少的等级） |
+| DEMO-07 | 医师·王伟 | 提交审批 → 未选用药目的被拦住 → 选目的后提交，工作台显示编号/状态/当前节点 |
+| DEMO-08 | 规则管理员 | 「审批流程设计」→ 从工具栏**拖拽**审核节点入画布，分别按人员/科室/角色配置 |
+| DEMO-09 | 规则管理员 | 校验 → 发布前节点清单摘要 → 发布；不退出会话，切回开单页发起新申请即用新版本 |
+| DEMO-10 | 三类审批人 | 「审批中心」待办出现新增节点 → 依次用人员/科室/角色账号按序通过 → 医师侧看到已通过 |
+| DEMO-11 | 审批人员·张玉梅 | 「移动端审批」处理同一条 FHIR Task → 回桌面端刷新看到状态变化 |
+| DEMO-12 | 医师·王伟 | 权限不足弹框选「紧急情况临时越级使用」→ 填原因 → 24h 期限；「演示数据管理」推进时钟 25h → **补审核超时**；补材料 → 完成补审核 |
+| DEMO-13 | 流程审阅人员 | 「流程版本管理」→ 版本清单、节点详情、任意两版本差异比较、实例绑定的版本 |
+| DEMO-14 | 流程审阅人员 | 回退恢复 → 生成新的当前版本；新申请走恢复版本，旧实例仍按原版本执行 |
+| DEMO-15 | 系统管理员 | 「演示数据管理 → 数据关联核查」：患者 → 就诊 → 开单 → 审批实例 → 流程版本 → Provenance/AuditEvent |
 
-## 三、推荐演示主流程（闭环）
+紧急补审核的「超时」用 `js/clock.js` 的演示时钟复现：全系统时间统一取自该时钟，状态持久化在
+`Basic/Basic-demo-clock` 并写穿服务端，刷新页面仍在。超时状态是**计算**出来的，不会自动把任务
+写成「补审核完成」（SRS FR-008.8）。
 
-1. 切换为 **医师** → 进入「处方权限申请」→「+ 新建申请」→ 选择「特殊使用级」→ 选药品（如美罗培南）→ 填写患者信息 → 提交。
-   - 系统模拟科室负责人、药学部门节点自动通过，流转至审批专家节点。
-2. 切换为 **审批专家** → 「处方权限审批」→ 待审批列表出现该申请 → 点击「审批」→ 查阅适应症校验 → 通过/驳回。
-3. 切换回 **医师** → 「处方权限申请」可见该申请状态已更新（已通过/已驳回）。
-4. 切换为 **系统管理员** → 「分级目录管理」新增/编辑药品（目录版本自动递增）→「权限映射配置」调整规则（卡控规则联动）→「权限卡控规则」用「规则测试」验证拦截效果。
-5. 切换为 **医疗质量管理部门** → 「监测概览 / 统计报表」查看 DDD、送检率、特殊使用占比、预警与多维报表。
-
-## 四、技术与架构
-
-- **框架**：Vue 3（全局构建，本地 `lib/vue.global.prod.js`），Options API，零构建。
-- **数据层（FHIR）**：`js/fhir-store.js` 实现类 FHIR RESTful 的内存资源库（`create/read/update/delete/search/bundle`）。
-- **种子数据**：`js/seed.js` 以 FHIR 资源编造业务一致的初始化数据。
-- **服务层**：`js/services.js` 在 FHIR CRUD 之上封装业务操作与跨资源联动（如目录变更→版本递增、映射变更→卡控同步、提交申请→生成 Task 与通知）。
-
-### FHIR 扩展与自定义（重要）
-
-基础 FHIR 资源无法表达的业务数据，**严格按 FHIR 规范通过扩展机制承载**，而非塞入非标准字段：
-
-- **`extension`**：为资源补充的附加数据（不改变资源原义），如药品规格、生产企业、药品分类。
-- **`modifierExtension`**：会改变资源含义/处理方式的数据 —— 抗菌药物**分级(level)**、**可开具职称**、**审批要求**、申请**类型**、卡控**拦截动作**等均归入此类（典型的 modifier 场景）。
-- **`StructureDefinition`**：以正式的 FHIR 资源**声明**每一个自定义扩展（canonical url、context、value 类型、是否 modifier）及 Profile（如「抗菌药物分级目录 Profile」约束 Medication）。
-- **`Basic` + StructureDefinition**：FHIR 推荐的「自定义资源」方式，承载系统配置等无对应资源的概念。
-- **复杂嵌套结构**（审批流程节点、报表数据集等）无对应 FHIR 元素时，以 `valueString` 承载 JSON，并在 Profile 注册表中显式声明。
-
-实现位于 `js/fhir-ext.js`（编解码 + Profile 注册表）与 `js/fhir-profiles.js`（StructureDefinition 定义）。内存库内部存储的是**纯 FHIR 资源**（仅含 `extension`/`modifierExtension`），读取时再投影出开发友好的访问对象，写入时编码回标准扩展。
-
-> **可视化验证**：顶部演示条右侧「🔍 FHIR 资源」可打开**FHIR 资源查看器**，实时查看任意资源的规范化原文（含 extension/modifierExtension 与 canonical url），向客户直观证明数据的 FHIR 合规性。
-
-示例（美罗培南 Medication 的分级，作为 modifierExtension）：
-
-```json
-"modifierExtension": [
-  { "url": "https://fhir.amr-demo.example/StructureDefinition/Medication-level", "valueCode": "special" },
-  { "url": "https://fhir.amr-demo.example/StructureDefinition/Medication-allowedTitles", "valueCode": "chief" },
-  { "url": "https://fhir.amr-demo.example/StructureDefinition/Medication-allowedTitles", "valueCode": "associate" }
-]
-```
-
-### FHIR 资源映射
-
-| 业务对象 | FHIR 资源 |
-|---|---|
-| 抗菌药物分级目录 | `Medication` |
-| 医务人员 / 患者 / 科室 | `Practitioner` / `Patient` / `Organization` |
-| 处方权限申请（审批流转） | `Task`（status / businessStatus / 流程节点）|
-| 适应症知识库 / 参考依据 | `ClinicalUseDefinition` / `Citation` |
-| 权限映射规则 / 卡控规则 | `Permission`（category 区分）|
-| 审批流程定义 | `PlanDefinition` |
-| 预警 / 手术预防用药监测 | `DetectedIssue` / `Observation` |
-| 监测指标 / 统计报表 | `MeasureReport` |
-| 动态 / 公告 / 通知 | `Communication` |
-| 变更记录（目录/参数/映射） | `Provenance` |
-| 外部系统对接 | `Endpoint` |
-| 系统参数等配置单例 | `Basic`（+ `StructureDefinition` 约束） |
-| 自定义扩展 / Profile 定义 | `StructureDefinition` |
-
-## 五、信息架构覆盖
-
-L1 首页 + 4 个 L2 模块 + 10 个 L3 页面，全部实现（含线框图中的各类弹框）：
-
-- 处方权限管理：处方权限申请、处方权限审批
-- 目录综合管理：分级目录管理、权限映射配置、适应症知识库
-- 监测分析：监测概览、统计报表
-- 系统管理：权限卡控规则、审批流程配置、系统参数设置（6 个 Tab）
-
-## 六、自检测试（可选）
-
-`test/render-test.js` 使用 jsdom 真实执行整个前端，遍历全部「角色 × 页面」渲染并跑通核心业务流，校验无运行时错误：
-
-```bash
-npm install jsdom@24   # 仅测试需要
-node test/render-test.js
-```
-
-## 七、对照设计文档的细节实现
-
-已逐条对照文档「页面字段清单（FD）」「页面流程图（PF）」「交互规范（IX）」查缺补漏，覆盖：
-
-- **数据真实化**：每种抗菌药物补充规格、商品名、生产企业、医保类别、库存状态（列表/详情/编辑全链路展示）。
-- **处方权限审批**：支持勾选 + 批量通过/批量驳回（PF-2），新增申请科室、申请时间筛选。
-- **处方权限申请**：新增「申请须知」（申请条件/审批时长/有效期）与「保存草稿」。
-- **系统参数·职称权限**：编辑时展示「变更影响预览」（在岗医师数 + 受影响科室分布）。
-- **权限卡控规则**：新增「规则变更日志」卡片，规则保存自动留痕（Provenance）。
-- **监测概览**：预警支持按类型/科室筛选，预警可「标记已处理」或「忽略（需填理由）」。
-- **适应症知识库**：新增「审核结果统计」（各药品通过率柱状图 + 驳回原因分布）。
-- **审批流程配置**：停用流程时校验并提示该分级下进行中的审批数量。
-
-> 说明：原型用于需求演示，部分外部交互（导出 Excel/PDF、下载模板、连接测试、短信/邮件发送等）以提示（Toast）形式模拟。
-
-## 八、自动化验证
-
-- `test/render-test.js`：遍历全部「角色 × 页面」渲染 + 核心业务流 + 30 项服务写路径冒烟，零运行时错误。
-- 另用 jsdom 模拟点击验证了弹框交互（药品详情、新建申请、批量审批等）均正常。
-
-## 九、r4-fhir-backend 分支：接入真实 FHIR R4 服务端
-
-本分支把数据层从「浏览器内存模拟」换成「本地镜像 + 真实 FHIR R4 服务端」，
-HAPI 地址可配置。界面与业务代码的写法不变（组件仍是同步取数，未改成 async）。
-
-### 1. 运行与配置
-
-```bash
-npm start                     # 静态服务，打开 http://localhost:8137
-```
-
-服务端地址按以下优先级解析，高优先覆盖低优先：
-
-| 顺序 | 来源 | 用途 |
-|---|---|---|
-| 1 | URL 参数 `?fhir=https://host/fhir&mode=local` | 演示链接临时切换，不落地 |
-| 2 | 顶部「🔌 已连接 FHIR」→ 设置弹框（存 localStorage） | 个人开发/试用 |
-| 3 | `fhir-config.json` | **部署方改这一个文件即可，不用动源码** |
-| 4 | 内置默认 `https://hapi.fhir.org/baseR4` | 开箱可跑 |
-
-`mode` 取 `remote`（默认）或 `local`（纯内存，等价 main 分支行为）。
-服务端不可达时，启动页可一键「以本地演示模式继续」，不会白屏。
-
-本地起一个真实 HAPI 做开发验证：
-
-```bash
-npm run fhir:up        # docker 起 hapiproject/hapi，端口 8081，R4
-npm run fhir:down
-```
-
-### 2. 代码结构
+## 四、代码结构
 
 | 文件 | 职责 |
 |---|---|
-| `js/config.js` | 运行时配置解析与持久化 |
-| `js/fhir-client.js` | R4 REST：`PUT {type}/{id}`、metadata 探活、翻页预取、OperationOutcome 转可读错误 |
-| `js/fhir-r4.js` | 内部资源 ⇄ 线上格式转换（R5 类型降级、业务状态词表、日期、悬空引用） |
-| `js/fhir-store.js` | 本地镜像 + 异步写穿队列（对外 API 与 main 分支一致） |
+| `js/config.js` | 运行时配置（fhirBase / mode / autoSeed / demoScope / persistUsageRecords） |
+| `js/fhir-client.js` | R4 REST：`PUT {type}/{id}`、事务 Bundle、`_tag` 检索、CapabilityStatement 解析 |
+| `js/fhir-r4.js` | 内部资源 ⇄ 线上形态：R5 类型降级、业务状态词表、点分日期路径、悬空引用、语义 id 与作用域标签 |
+| `js/fhir-store.js` | 本地镜像 + 写穿队列（按引用依赖分阶段）+ 增量刷新 + 能力检查 |
+| `js/fhir-ext.js` | `ext` 投影 ⇄ 标准 `extension/modifierExtension` 编解码 |
+| `js/domain.js` | 等级/职称/用药目的/审批对象/流程与医嘱状态词表、演示身份、导航信息架构 |
+| `js/clock.js` | 演示时钟（24 小时补审核与超时的唯一时源） |
+| `js/approval.js` | 分级授权判定 + 审批流程引擎（版本、发布、回退、实例、任务、消息、留痕） |
+| `js/seed.js` | 初始化数据；流程与审批实例都经引擎生成，装载即验证引擎 |
+| `js/services.js` | 业务服务层；`Svc.srs.*` 是 SRS 侧服务，`Svc.*` 保留既有原型能力 |
+| `js/components/*.js` | 21 个页面组件（SRS §6.1 的 10 个入口 + 移动端审批 + 既有原型页面） |
 
-启动时 `bootstrap()`：探活 → 逐类型预取进镜像 → 服务端为空且开启 `autoSeed`
-时写入 161 条初始资源 → 已有数据则做对账，丢弃「本地预置但服务端没有」的残留。
+页面组件约定（模板必须通过 computed 暴露领域常量、computed 首行订阅 `App.state.refresh` 等）见
+`js/components/common.js` 与各页面头部注释；`test/render-test.js` 会编译全部页面模板并用
+「每个身份 × 每个可访问页面」做渲染回归。
 
-### 3. 为通过 R4 校验所做的转换
+## 五、SRS 功能对照
 
-实测 `baseR4`（FHIR 4.0.1）后会拒绝下列写法，转换只在收发边界发生，应用内部
-仍用原有类型名与业务词表：
+| SRS | 实现位置 |
+|---|---|
+| FR-001 等级维护 | `grade-rules.js` + `Svc.srs.grades/saveGrade/addGrade/gradeImpact` |
+| FR-002 职称权限 | `grade-rules.js` + `Svc.srs.titleRules/titleRuleDiff/saveTitleRule` |
+| FR-003 科室与个人权限 | `physician-perm.js` + `Svc.srs.departments/departmentDoctors/saveDeptGrant/savePersonGrant/doctorDetail`、`Approval.authorizations` |
+| FR-004 药物目录 | `catalog.js` + `Svc.srs.searchDrugs/setDrugGrade/drugPermissionView` |
+| FR-005/006 开立判定与提示 | `order-demo.js` + `Approval.check`（选药与提交各判一次） |
+| FR-007 超权限触发审批 | `Approval.createInstance` + 主/节点 Task |
+| FR-008 紧急越级与 24h 补审核 | `emergency-review.js`、`clock.js`、`Approval.createEmergency` |
+| FR-009 嵌入临床与实时提醒 | `order-demo`/`approval-center`/工作台/消息，跨身份同步用 `App.refreshFromServer()` |
+| FR-010 用药目的弹窗 | `order-demo.js` + `Svc.srs.submitOrder`（未选目的抛 `PURPOSE_REQUIRED`） |
+| FR-011~015 流程设计器与发布 | `workflow-designer.js` + `Approval.newDraft/saveDraft/validate/publish` |
+| FR-016/020/021/022 审批中心 | `approval-center.js`、`mobile-approval.js` + `Approval.rows/flowView/act` |
+| FR-017 移动端审核 | `mobile-approval.js`（同一路由体系，共用同一条 FHIR Task） |
+| FR-018/019 版本查看与回退 | `workflow-versions.js` + `Approval.versions/compare/rollback` |
+| FR-023 消息与提醒 | `Approval.notify`（CommunicationRequest + Communication）、`Svc.srs.messages/jump` |
+| SRS §10.2 能力检查 | `FHIR.capabilities()` + 「演示数据管理」页表格，不支持项显式标红 |
+| DEMO-01/15 | `demo-data.js`（一键核对、数据关联核查、初始化与时钟） |
 
-| 原型（main）写法 | R4 服务端反应 | 本分支处理 |
-|---|---|---|
-| `Permission` / `Citation` / `ClinicalUseDefinition` | `HAPI-0302` 未知类型 | 降级为 `Basic`，原始元素搬入 `extension[source-element-*]`，原始类型记于 `meta.tag`，读回还原 |
-| `authoredOn: "2026-06-12 09:20"` | `HAPI-1821` 非法日期 | 写入统一转 ISO instant；展示仍用本地格式 |
-| `Task.for: "Patient/new"` | `HAPI-1094` 引用不存在 | 按病案号找回或补建 `Patient` 资源；仍不可解析时省略该可选引用 |
-| `Endpoint.status: error/off`、`DetectedIssue.status: preliminary/mitigated` | 词表与 R4 不一致 | 标准字段只放 R4 合法码，业务状态进扩展并原样读回 |
-| `POST` 时自带 id | 服务端另发数字 id | 一律用 `PUT {type}/{id}`，语义化 id（`Basic-catalog-version` 等）得以保留 |
-| 内容雷同的资源 | `HTTP 412` 重复内容检测 | 审计记录时间戳精确到秒并写 `Provenance.activity`；写失败在顶栏红点与设置面板可见 |
+## 六、FHIR 数据映射
 
-`identifier` / `meta.tag` 均写入语义化 id 作为回退键。注意 R4 的 `Provenance`
-没有 `identifier` 元素，所以通用回退走 `_tag=system|code`（实测各类型都支持）。
+| 业务对象 | FHIR 资源 |
+|---|---|
+| 患者 / 就诊 | `Patient` / `Encounter`（门诊 `AMB`、住院 `IMP`、急诊 `EMER`） |
+| 医师 / 岗位 / 医院科室 | `Practitioner` / `PractitionerRole` / `Organization` |
+| 药物知识与药品 | `MedicationKnowledge`（等级分类）/ `Medication` |
+| 等级与用药目的字典 | `CodeSystem` + `ValueSet`（`amr-level`、`amr-purpose`、`amr-role`） |
+| 授权规则（职称/科室/个人） | `Permission`（R4 无此类型 → 降级 `Basic` + 扩展，见第七节） |
+| 抗菌药物开单 | `MedicationRequest`（等级快照、用药目的、紧急标识、权限命中来源在扩展） |
+| 审批流程定义与版本 | `PlanDefinition`（一版本一资源，同 `url` 递增 `version`，`action[]` 为节点投影） |
+| 审批流程实例与节点任务 | 主 `Task`（`instantiatesCanonical` 绑版本）+ 节点 `Task`（`partOf`、`owner`、`output`、`restriction.period`） |
+| 通知 | `CommunicationRequest`（该通知谁）+ `Communication`（已发出、可跳转） |
+| 留痕 | `Provenance` + `AuditEvent`（发布、回退、审批、授权变更） |
+| 监测与报表 | `MedicationAdministration`（4870 条，默认只留本地镜像）、`DetectedIssue`、`Observation` |
+| 扩展与 Profile 声明 | `StructureDefinition` |
 
-约 4870 条 `MedicationAdministration` 用药记录默认**只留本地镜像**（统计页照常
-工作），需要落服务端时置 `fhir-config.json` 的 `persistUsageRecords: true`。
+## 七、为通过真实 R4 服务端所做的处理
 
-### 4. 测试
+实测 `hapi.fhir.org/baseR4`（FHIR 4.0.1 / HAPI 8.13）会拒绝下列写法，转换只发生在收发边界：
+
+| 问题 | 处理 |
+|---|---|
+| `Permission` / `Citation` / `ClinicalUseDefinition` 是 R5 类型（`HAPI-0302`） | 降级为 `Basic`，原始元素搬入 `extension[source-element-*]`，原始类型记在 `meta.tag`，读回还原 |
+| `HAPI-0931` `Communication(Request).subject` 不接受 `Task` 引用 | 「关于哪个审批实例」改走 `about`，`subject` 放患者 |
+| `MedicationRequestStatus` 不认 `revoked` | 医嘱业务态一律映射到 R4 合法码（`draft/active/on-hold/cancelled/completed`），业务状态另存 `statusReason` + 扩展 |
+| `AuditEventOutcome` 码表是 `0/4/8/12` | `outcome` 用 `'0'` |
+| `PlanDefinition.action.id` 必须是 `[A-Za-z0-9-]{1,64}` | 中文节点名放 `title/description`，`id` 用 `node-N` |
+| `HAPI-1821` 非法日期 | 日期统一 ISO；`DATE_ELEMENTS` 支持点分路径（`Task.restriction.period.end`、`Encounter.period.*` 等） |
+| `HAPI-1094` 悬空引用 | 写队列按引用依赖分阶段；只保留 `Task.focus → MedicationRequest` 单向，不写 `basedOn` 回指；引用目标类型白名单校验 |
+| `HAPI-0506` 引用指向 R5 专有类型（`AuditEvent.entity.what → Permission/…`） | 收发边界把引用改写到降级后的类型（`Basic/…`），原类型记在 `Reference.type`，读回还原，本地镜像看到的仍是 `Permission/…` |
+| 扩展数组退化 | 单元素数组会被编解码退化成标量，所有数组字段必须在 `fhir-ext.js` 的 REGISTRY 声明为 `list` |
+| 内容雷同被 `HTTP 412` 判重 | 审计时间戳精确到秒并写 `activity`；版本化 `PlanDefinition` 每版内嵌版本标记 |
+| 客户端自带 id 被忽略 | 一律 `PUT {type}/{id}`，语义化 id（`Basic-catalog-version` 等）得以保留，同时写入 `identifier` 与 `meta.tag` 作为回退键 |
+
+## 八、自动化验证
 
 ```bash
-npm test                      # 全角色×全页面渲染回归（无网络）
-npm run test:roundtrip        # 5031 个资源的线上形态静态检查 + 真实服务端无损往返
-npm run test:e2e              # 需本地 HAPI：首启初始化 → 二次装载还原 → 写穿 → 合规检查
+npm test              # 全部页面模板编译 + 每个身份×每个可访问页面渲染 + 引擎/服务写路径 + FHIR 规范化
+npm run test:demo:local   # DEMO-01~15 业务链路（纯内存，快速）
+npm run test:demo         # DEMO-01~15 连真实 FHIR 服务端（含写穿与服务端读回，结束自动清理本轮数据）
+npm run test:roundtrip    # 全量资源线上形态检查 + 真实服务端无损往返（含 SRS 新增类型）
+npm run test:e2e          # 需本地 HAPI：首启初始化 → 二次读回 → 引擎链路落库 → 版本发布回退
 ```
 
-`test:roundtrip` 使用随机前缀写公共演示服务器并在结束后删除（实测无残留）；
-`test:e2e` 拒绝指向公共服务器，必须配本地实例。
+## 九、边界与诚实性说明
 
-### 5. 已知边界
-
-- **公共演示实例不适合真实数据**：`hapi.fhir.org` 无鉴权、数据公开、任何人可读写删除、
-  定期清库。真实部署应自建 HAPI 并加 SMART on FHIR / OAuth2。
-- **远端模式下界面里的删除会真的删除服务端资源**。
-- **临床含义仍大量依赖扩展**：`MedicationAdministration` 的药品/医师/科室/DDD 等
-  业务字段以 `valueString` 承载，标准 FHIR 客户端读不出语义、也无法按这些字段做
-  服务端检索。往真实系统推进时，这部分应逐步归位到标准元素。
-
+- 患者、医师、科室、药品、审批结论全部是**虚构演示数据**；任何演示结果都不构成真实临床处方、
+  用药建议或审批决定（SRS BR-010）。
+- 界面上的「可提交临床系统」只代表本演示流程已满足审批条件，不代表已发药或实际执行（SRS §3.4）。
+- HAPI FHIR 只是资源存储与 REST 服务，不是采购条款里的流程引擎：规则判定、任务分配、节点推进、
+  版本绑定都由前端引擎完成再写回 FHIR（SRS §10.7）。
+- 跨身份的数据同步通过**重新查询 FHIR 服务端**实现，不包含医院短信或统一消息平台（SRS FR-009.8）。
+- 采购文件未规定的规则（权限冲突优先级、补审核节点构成、用途字典、演示药品分级）全部做成可调
+  配置项并在界面标注「演示配置」，不被固化为医院正式制度。
+- 公共演示实例 `hapi.fhir.org` 无鉴权、数据公开、任何人可读写删除、可能定期清库；正式演示建议
+  用本地 HAPI 并加 SMART on FHIR / OAuth2。

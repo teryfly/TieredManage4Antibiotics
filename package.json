@@ -11,8 +11,16 @@
     "test": "node test/render-test.js",
     "test:roundtrip": "node test/r4-roundtrip.js",
     "test:e2e": "node test/e2e-bootstrap.js",
+    "test:browser": "node test/browser-smoke.js",
     "fhir:up": "docker run --rm -d --name hapi-r4-dev -p 8081:8080 -e hapi.fhir.fhir_version=R4 -e hapi.fhir.server.base_url=http://localhost:8081/fhir hapiproject/hapi:latest",
-    "fhir:down": "docker stop hapi-r4-dev"
+    "fhir:down": "docker stop hapi-r4-dev",
+    "test:demo": "node test/demo_walkthrough.js",
+    "test:demo:local": "FHIR_BASE=local node test/demo_walkthrough.js",
+    "seed:export": "node scripts/export_seed.js",
+    "demo:init": "python3 scripts/init_demo_data.py",
+    "demo:clean": "python3 scripts/clean_demo_data.py",
+    "demo:status": "python3 scripts/demo_data.py status",
+    "demo:reset": "python3 scripts/demo_data.py reset"
   },
   "keywords": [],
   "author": "",

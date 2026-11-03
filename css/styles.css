@@ -284,3 +284,31 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--red); }
 .role-pill.conn-busy { border-color: var(--primary); color: var(--primary-dark); }
 .role-pill.conn-err { border-color: var(--red); color: var(--red); background: #fef2f2; }
 .txt-err { color: var(--red); }
+
+/* ============ SRS 新增页面所需样式（拖拽流程画布 / 身份切换 / 移动端） ============ */
+.identity-pick { padding:5px 8px; border:1px solid #b45309; border-radius:6px; background:#fff; color:#78350f; font-size:13px; max-width:280px; }
+.role-switch-inner { flex-wrap:wrap; row-gap:8px; }
+.flow-canvas { gap:0; }
+.flow-node.selected { box-shadow:0 0 0 2px rgba(23,105,192,.18); }
+.flow-node[draggable="true"]:active { cursor:grabbing; }
+.flow-legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--text-2); }
+.node-diff-add { border-left:4px solid #16a34a !important; }
+.node-diff-del { border-left:4px solid #dc2626 !important; text-decoration:line-through; }
+.node-diff-move { border-left:4px solid #d97706 !important; }
+.purpose-pick { display:flex; flex-direction:column; gap:8px; }
+.purpose-pick label { display:flex; gap:8px; align-items:flex-start; padding:10px 12px; border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+.purpose-pick label.on { border-color:var(--primary); background:#f2f7ff; }
+.mobile-frame { max-width:420px; margin:0 auto; border:10px solid #0f1b2d; border-radius:26px; padding:10px; background:#f2f5f9; box-shadow:var(--shadow-lg); }
+.mobile-head { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#0f1b2d; color:#fff; border-radius:14px; font-size:13px; }
+.mobile-card { background:#fff; border-radius:12px; padding:12px; margin-bottom:10px; box-shadow:var(--shadow); border-left:4px solid var(--border); }
+.mobile-card.urgent { border-left-color:#dc2626; }
+.mobile-card.due { border-left-color:#d97706; }
+.mobile-tabs { display:flex; gap:6px; margin-bottom:10px; }
+.mobile-tabs button { flex:1; font-size:12px; padding:7px 4px; }
+@media (max-width: 900px) {
+  /* 移动端审批需要导航仍可用，旧规则把 .nav 整个隐藏会导致无法返回 */
+  .nav { display:flex; }
+  .nav-item > a { font-size:12px; padding:0 8px; }
+  .role-switch-inner { font-size:12px; }
+  .mobile-frame { max-width:100%; border-width:0; box-shadow:none; padding:0; background:transparent; }
+}
